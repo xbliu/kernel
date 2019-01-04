@@ -148,9 +148,9 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 		unsigned long *first_logical_block, get_block_t get_block,
 		gfp_t gfp)
 {
-	struct inode *inode = page->mapping->host;
-	const unsigned blkbits = inode->i_blkbits;
-	const unsigned blocks_per_page = PAGE_SIZE >> blkbits;
+	struct inode *inode = page->mapping->host; //得文件在磁盘中索引节点 <一个文件对应一个inode>
+	const unsigned blkbits = inode->i_blkbits; //一个block大小所占位数
+	const unsigned blocks_per_page = PAGE_SIZE >> blkbits; //计算一页中有多少个block
 	const unsigned blocksize = 1 << blkbits;
 	sector_t block_in_file;
 	sector_t last_block;
@@ -164,13 +164,19 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 	unsigned nblocks;
 	unsigned relative_block;
 
-	if (page_has_buffers(page))
+	if (page_has_buffers(page)) //{page中的block非连续}
 		goto confused;
-
+	
+	//
+	//将页号转换成文件的块号(毕竟文件系统中以block为单位进行存储数据);
+	//如file size:2M  page size:4K(PAGE_SHIFT 12)  block size:512byte(blkbits 9)
+	//则有page总数2M/4k=512 block总数有2M/512=4096,
+	//设页序号为5(index),则有block序号5×4K/512=40 即 index * (1<<PAGE_SHIFT)/(1<<blkbits)=index*1<<(PAGE_SHIFT-blkbits)
+	//
 	block_in_file = (sector_t)page->index << (PAGE_SHIFT - blkbits);
-	last_block = block_in_file + nr_pages * blocks_per_page;
-	last_block_in_file = (i_size_read(inode) + blocksize - 1) >> blkbits;
-	if (last_block > last_block_in_file)
+	last_block = block_in_file + nr_pages * blocks_per_page;  //最后一个block序号
+	last_block_in_file = (i_size_read(inode) + blocksize - 1) >> blkbits; //文件中最大block序号
+	if (last_block > last_block_in_file)//请求的数据不能超过文件的大小（以block序号来进行判断）
 		last_block = last_block_in_file;
 	page_block = 0;
 
