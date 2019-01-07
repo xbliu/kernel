@@ -214,7 +214,7 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 
 		if (block_in_file < last_block) {
 			map_bh->b_size = (last_block-block_in_file) << blkbits;
-			if (get_block(inode, block_in_file, map_bh, 0))
+			if (get_block(inode, block_in_file, map_bh, 0)) //计算文件逻辑号[block_in_file,last_block]块在硬盘上的位置（即对应的物理块号）是否连续
 				goto confused;
 			*first_logical_block = block_in_file;
 		}
