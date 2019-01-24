@@ -170,7 +170,15 @@ static int ext2_block_to_path(struct inode *inode,
 		double_blocks = (1 << (ptrs_bits * 2));
 	int n = 0;
 	int final = 0;
-
+	/*
+	***ext2 block物理块号存储在大小为15的数组中,寻址分为四阶梯：
+	***第一阶梯：0～11(即前12个逻辑块); 直接存储在数组中
+	***第二阶段：12～indirect_blocks-1; 一级间接存储 13th存储着存放块号的地址
+	***第三阶段:indirect_blocks～double_blocks-1; 二级间接存储, 同理14th及其指向的块皆非直接存储着目标block号
+	***第三阶段：double_blocks～third_blocks-1; 三级间接存储 同理
+	***
+	***offsets[n]数组中[n-1] 存储n-1级偏移,类似于页表寻址
+	*/
 	if (i_block < 0) {
 		ext2_msg(inode->i_sb, KERN_WARNING,
 			"warning: %s: block < 0", __func__);
