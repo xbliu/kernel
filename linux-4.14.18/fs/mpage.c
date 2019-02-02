@@ -214,15 +214,21 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 
 		if (block_in_file < last_block) {
 			map_bh->b_size = (last_block-block_in_file) << blkbits;
+			/*get_block:
+			***=0 没有找到对应的物理块(文件空洞)
+			***>1 [block_in_file,block_in_file+ret-1]为连续块 
+			***<0 出错<eg: EIO>
+			*/
 			if (get_block(inode, block_in_file, map_bh, 0)) //计算文件逻辑号[block_in_file,last_block]块在硬盘上的位置（即对应的物理块号）是否连续
 				goto confused;
 			*first_logical_block = block_in_file;
 		}
-
-		if (!buffer_mapped(map_bh)) {
+		
+		/*文件空洞*/
+		if (!buffer_mapped(map_bh)) { 
 			fully_mapped = 0;
 			if (first_hole == blocks_per_page)
-				first_hole = page_block;
+				first_hole = page_block;  /*记录首次查到的文件空洞逻辑号*/
 			page_block++;
 			block_in_file++;
 			continue;
