@@ -178,6 +178,7 @@ static int ext2_block_to_path(struct inode *inode,
 	***第三阶段：double_blocks～third_blocks-1; 三级间接存储 同理
 	***
 	***offsets[n]数组中[n-1] 存储n-1级偏移,类似于页表寻址
+	***boundary:此逻辑块号与下一相邻逻辑块号是否存储在同一页内
 	*/
 	if (i_block < 0) {
 		ext2_msg(inode->i_sb, KERN_WARNING,
