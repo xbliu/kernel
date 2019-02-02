@@ -252,17 +252,17 @@ static Indirect *ext2_get_branch(struct inode *inode,
 
 	*err = 0;
 	/* i_data is not going away, no lock needed */
-	add_chain (chain, NULL, EXT2_I(inode)->i_data + *offsets);
+	add_chain (chain, NULL, EXT2_I(inode)->i_data + *offsets); /*key 存储要查找的物理块号*/
 	if (!p->key)
 		goto no_block;
 	while (--depth) {
-		bh = sb_bread(sb, le32_to_cpu(p->key));
+		bh = sb_bread(sb, le32_to_cpu(p->key)); /*读取此块数据*/
 		if (!bh)
 			goto failure;
 		read_lock(&EXT2_I(inode)->i_meta_lock);
 		if (!verify_chain(chain, p))
 			goto changed;
-		add_chain(++p, bh, (__le32*)bh->b_data + *++offsets);
+		add_chain(++p, bh, (__le32*)bh->b_data + *++offsets); /*下一级bh及物理块号*/
 		read_unlock(&EXT2_I(inode)->i_meta_lock);
 		if (!p->key)
 			goto no_block;
@@ -648,7 +648,7 @@ static int ext2_get_blocks(struct inode *inode,
 
 	depth = ext2_block_to_path(inode,iblock,offsets,&blocks_to_boundary);
 
-	if (depth == 0)
+	if (depth == 0)/*深度正常范围为[1,4]*/
 		return -EIO;
 
 	partial = ext2_get_branch(inode, depth, offsets, chain, &err);
