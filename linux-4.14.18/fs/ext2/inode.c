@@ -645,16 +645,21 @@ static int ext2_get_blocks(struct inode *inode,
 	ext2_fsblk_t first_block = 0;
 
 	BUG_ON(maxblocks == 0);
-
+	
+	/*blocks_to_boundary： iblock离边界的距离即还有多少块达到边界*/
 	depth = ext2_block_to_path(inode,iblock,offsets,&blocks_to_boundary);
 
 	if (depth == 0)/*深度正常范围为[1,4]*/
 		return -EIO;
-
+	/*
+	****chain.key 当前级物理块号 
+	****chain.p   当前级物理块号地址
+	****chain.bh  当前级的数据块 （0 级数据块为空）
+	*/
 	partial = ext2_get_branch(inode, depth, offsets, chain, &err);
 	/* Simplest case - block found, no allocation needed */
 	if (!partial) {
-		first_block = le32_to_cpu(chain[depth - 1].key);
+		first_block = le32_to_cpu(chain[depth - 1].key); /*iblock对应的物理块号*/
 		count++;
 		/*map more blocks*/
 		while (count < maxblocks && count <= blocks_to_boundary) {
@@ -672,14 +677,14 @@ static int ext2_get_blocks(struct inode *inode,
 				partial = chain + depth - 1;
 				break;
 			}
-			blk = le32_to_cpu(*(chain[depth-1].p + count));
-			if (blk == first_block + count)
+			blk = le32_to_cpu(*(chain[depth-1].p + count));/*iblock+count对应的物理块号*/
+			if (blk == first_block + count) /*相等表示两物理快好相邻*/
 				count++;
 			else
 				break;
 		}
 		if (err != -EAGAIN)
-			goto got_it;
+			goto got_it; /*连续块查找完成*/
 	}
 
 	/* Next simple case - plain lookup or failed read of indirect block */
@@ -790,15 +795,20 @@ int ext2_get_block(struct inode *inode, sector_t iblock,
 	bool new = false, boundary = false;
 	u32 bno;
 	int ret;
-
+	/*正常情况：
+	bno: ibock对应物理快好  
+	ret: 物理块连续的数目
+	boundary:是否到达边界
+	*/
 	ret = ext2_get_blocks(inode, iblock, max_blocks, &bno, &new, &boundary,
 			create);
 	if (ret <= 0)
 		return ret;
-
+	
+	/*对物理块为[bno,bno+ret]作为一次请求读取*/
 	map_bh(bh_result, inode->i_sb, bno);
-	bh_result->b_size = (ret << inode->i_blkbits);
-	if (new)
+	bh_result->b_size = (ret << inode->i_blkbits); 
+	if (new) /*新建块 ？？？*/ 
 		set_buffer_new(bh_result);
 	if (boundary)
 		set_buffer_boundary(bh_result);
