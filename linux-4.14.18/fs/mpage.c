@@ -214,10 +214,15 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 
 		if (block_in_file < last_block) {
 			map_bh->b_size = (last_block-block_in_file) << blkbits;
-			/*get_block:
+			/*get_block(ext2_get_block):
 			***=0 没有找到对应的物理块(文件空洞)
-			***>1 [block_in_file,block_in_file+ret-1]为连续块 
+			***=0 [block_in_file,block_in_file+ret-1]为连续块 
 			***<0 出错<eg: EIO>
+			**** 
+			***ext2_get_blocks:
+			*return > 0, # of blocks mapped or allocated.
+ 			* return = 0, if plain lookup failed.
+ 			* return < 0, error case.
 			*/
 			if (get_block(inode, block_in_file, map_bh, 0)) //计算文件逻辑号[block_in_file,last_block]块在硬盘上的位置（即对应的物理块号）是否连续
 				goto confused;
@@ -249,8 +254,11 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 			goto confused;		/* hole -> non-hole */
 
 		/* Contiguous blocks? */
-		if (page_block && blocks[page_block-1] != map_bh->b_blocknr-1)
+		if (page_block && blocks[page_block-1] != map_bh->b_blocknr-1) /*前后两个查询的物理块号是否连续*/
 			goto confused;
+		/*
+		***将查询到的物理块号存储到blocks数据中(map_bh->b_blocknr,map_bh->b_blocknr+nblocks)
+		*/
 		nblocks = map_bh->b_size >> blkbits;
 		for (relative_block = 0; ; relative_block++) {
 			if (relative_block == nblocks) {
