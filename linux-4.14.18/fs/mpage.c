@@ -184,6 +184,9 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 	 * Map blocks using the result from the previous get_blocks call first.
 	 */
 	nblocks = map_bh->b_size >> blkbits;
+	/*
+	***若map_bh已经存有查询结果且逻辑块在[*first_logical_block,*first_logical_block+nblocks]之间直接使用上一次的查询结果
+	*/
 	if (buffer_mapped(map_bh) && block_in_file > *first_logical_block &&
 			block_in_file < (*first_logical_block + nblocks)) {
 		unsigned map_offset = block_in_file - *first_logical_block;
@@ -272,7 +275,11 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 		}
 		bdev = map_bh->b_bdev;
 	}
-
+	
+	/*
+	***a.页内块有空洞将空洞内容清0
+	***b.页内无空洞，表明最新内容在disk.
+	*/
 	if (first_hole != blocks_per_page) {
 		zero_user_segment(page, first_hole << blkbits, PAGE_SIZE);
 		if (first_hole == 0) {
@@ -308,7 +315,9 @@ alloc_new:
 		if (bio == NULL)
 			goto confused;
 	}
-
+	/*
+	***将page加入bio
+	*/
 	length = first_hole << blkbits;
 	if (bio_add_page(bio, page, length, 0) < length) {
 		bio = mpage_bio_submit(REQ_OP_READ, 0, bio);
@@ -317,6 +326,9 @@ alloc_new:
 
 	relative_block = block_in_file - *first_logical_block;
 	nblocks = map_bh->b_size >> blkbits;
+	/*
+	***页内连续块有空洞或有处于边界的物理块提交bio,否则记录最后物理块号尝试与相邻的下一页数据块一起提交bio
+	*/
 	if ((buffer_boundary(map_bh) && relative_block == nblocks) ||
 	    (first_hole != blocks_per_page))
 		bio = mpage_bio_submit(REQ_OP_READ, 0, bio);
