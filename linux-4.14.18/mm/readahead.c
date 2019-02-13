@@ -168,6 +168,7 @@ int __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 	/*
 	 * Preallocate as many pages as we will need.
 	 */
+	/*查找未缓存的页,分配并加入到page_pool,以便将所缺内容加载到缓存中*/
 	for (page_idx = 0; page_idx < nr_to_read; page_idx++) {
 		pgoff_t page_offset = offset + page_idx;
 
@@ -196,7 +197,7 @@ int __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 	 * will then handle the error.
 	 */
 	if (ret)
-		read_pages(mapping, filp, &page_pool, ret, gfp_mask);
+		read_pages(mapping, filp, &page_pool, ret, gfp_mask); /*将所需磁盘数据加载到缓存*/
 	BUG_ON(!list_empty(&page_pool));
 out:
 	return ret;
@@ -372,6 +373,16 @@ static int try_context_readahead(struct address_space *mapping,
 /*
  * A minimal readahead algorithm for trivial sequential/random reads.
  */
+/*
+***a.预读窗口调整有一下几种情况：
+***1.文件从头开始读
+***2.顺序读:从上一次请求的最后一页或者从上一次读取的最后一页开始读
+***3.触发预读页
+***4.req_size大于最大预读页数 或者上一次读的位置跟这次读的位置相差一页大小
+***5.offset前缓存的历史页大于req_size
+***b.不满足以上情况预读窗口不调整,进行随机读
+***
+*/
 static unsigned long
 ondemand_readahead(struct address_space *mapping,
 		   struct file_ra_state *ra, struct file *filp,
