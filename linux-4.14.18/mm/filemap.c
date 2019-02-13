@@ -1955,11 +1955,11 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 		return 0;
 	iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
 
-	index = *ppos >> PAGE_SHIFT;
-	prev_index = ra->prev_pos >> PAGE_SHIFT;
-	prev_offset = ra->prev_pos & (PAGE_SIZE-1);
-	last_index = (*ppos + iter->count + PAGE_SIZE-1) >> PAGE_SHIFT;
-	offset = *ppos & ~PAGE_MASK;
+	index = *ppos >> PAGE_SHIFT; /*此次读取的第一页索引*/
+	prev_index = ra->prev_pos >> PAGE_SHIFT; /*上一次读取的页索引*/
+	prev_offset = ra->prev_pos & (PAGE_SIZE-1); /*上一次的页内偏移*/
+	last_index = (*ppos + iter->count + PAGE_SIZE-1) >> PAGE_SHIFT; /*此次读取的最后一页索引*/
+	offset = *ppos & ~PAGE_MASK; /*此次读取的页内偏移*/
 
 	for (;;) {
 		struct page *page;
@@ -1969,13 +1969,13 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 
 		cond_resched();
 find_page:
-		if (fatal_signal_pending(current)) {
+		if (fatal_signal_pending(current)) { /*有信号则结束读取*/
 			error = -EINTR;
 			goto out;
 		}
 
-		page = find_get_page(mapping, index);
-		if (!page) {
+		page = find_get_page(mapping, index); /*从radix树中查找缓存页*/
+		if (!page) { /*缓存中无则同步预读*/
 			if (iocb->ki_flags & IOCB_NOWAIT)
 				goto would_block;
 			page_cache_sync_readahead(mapping,
@@ -1985,12 +1985,12 @@ find_page:
 			if (unlikely(page == NULL))
 				goto no_cached_page;
 		}
-		if (PageReadahead(page)) {
+		if (PageReadahead(page)) { /*页内含有预读标志则异步预读*/
 			page_cache_async_readahead(mapping,
 					ra, filp, page,
 					index, last_index - index);
 		}
-		if (!PageUptodate(page)) {
+		if (!PageUptodate(page)) { /*若数据未从磁盘更新到内存,则等待其更新完毕*/
 			if (iocb->ki_flags & IOCB_NOWAIT) {
 				put_page(page);
 				goto would_block;
@@ -2035,21 +2035,21 @@ page_ok:
 
 		isize = i_size_read(inode);
 		end_index = (isize - 1) >> PAGE_SHIFT;
-		if (unlikely(!isize || index > end_index)) {
+		if (unlikely(!isize || index > end_index)) {  /*文件大小检查(以页为单位)*/
 			put_page(page);
 			goto out;
 		}
 
 		/* nr is the maximum number of bytes to copy from this page */
 		nr = PAGE_SIZE;
-		if (index == end_index) {
+		if (index == end_index) { /*文件大小(字节为单位)检查*/
 			nr = ((isize - 1) & ~PAGE_MASK) + 1;
 			if (nr <= offset) {
 				put_page(page);
 				goto out;
 			}
 		}
-		nr = nr - offset;
+		nr = nr - offset; /*页内复制的字节数*/
 
 		/* If users can be writing to this page using arbitrary
 		 * virtual addresses, take care about potential aliasing
@@ -2070,7 +2070,7 @@ page_ok:
 		 * Ok, we have the page, and it's up-to-date, so
 		 * now we can copy it to user space...
 		 */
-
+		/*复制页内数据,并更新读取位置*/
 		ret = copy_page_to_iter(page, offset, nr, iter);
 		offset += ret;
 		index += offset >> PAGE_SHIFT;
@@ -2180,6 +2180,7 @@ no_cached_page:
 would_block:
 	error = -EAGAIN;
 out:
+	/*更新预读上一次位置,以便检测下一次是否进行预读*/
 	ra->prev_pos = prev_index;
 	ra->prev_pos <<= PAGE_SHIFT;
 	ra->prev_pos |= prev_offset;
