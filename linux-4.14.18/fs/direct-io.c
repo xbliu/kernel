@@ -1169,7 +1169,7 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 	 * Avoid references to bdev if not absolutely needed to give
 	 * the early prefetch in the caller enough time.
 	 */
-
+        /*至少需要跟块设备块大小对齐，文件的块大小大于等于块设备的块大小*/
 	if (align & blocksize_mask) {
 		if (bdev)
 			blkbits = blksize_bits(bdev_logical_block_size(bdev));
@@ -1201,7 +1201,7 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 
 			/* will be released by direct_io_worker */
 			inode_lock(inode);
-
+                        /*？？*/
 			retval = filemap_write_and_wait_range(mapping, offset,
 							      end - 1);
 			if (retval) {
@@ -1214,6 +1214,7 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 
 	/* Once we sampled i_size check for reads beyond EOF */
 	dio->i_size = i_size_read(inode);
+	/*读不能超过文件尾*/
 	if (iov_iter_rw(iter) == READ && offset >= dio->i_size) {
 		if (dio->flags & DIO_LOCKING)
 			inode_unlock(inode);
