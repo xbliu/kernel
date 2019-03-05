@@ -1169,7 +1169,9 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 	 * Avoid references to bdev if not absolutely needed to give
 	 * the early prefetch in the caller enough time.
 	 */
-        /*至少需要跟块设备块大小对齐，文件的块大小大于等于块设备的块大小*/
+        /*边界对齐:
+	***至少需要跟块设备块大小对齐，文件的块大小大于等于块设备的块大小
+	*/
 	if (align & blocksize_mask) {
 		if (bdev)
 			blkbits = blksize_bits(bdev_logical_block_size(bdev));
