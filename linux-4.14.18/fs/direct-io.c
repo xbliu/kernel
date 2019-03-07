@@ -956,14 +956,14 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
 		struct page *page;
 		size_t from, to;
 
-		page = dio_get_page(dio, sdio);
+		page = dio_get_page(dio, sdio); /*获取用户页并将其存储到dio->pages数组中*/
 		if (IS_ERR(page)) {
 			ret = PTR_ERR(page);
 			goto out;
 		}
-		from = sdio->head ? 0 : sdio->from;
-		to = (sdio->head == sdio->tail - 1) ? sdio->to : PAGE_SIZE;
-		sdio->head++;
+		from = sdio->head ? 0 : sdio->from;  /*页内起始偏移：第一页(from),其他页(0)*/
+		to = (sdio->head == sdio->tail - 1) ? sdio->to : PAGE_SIZE; /*页内结束偏移: 最后一页(to),其他页(PAGE_SIZE)*/
+		sdio->head++; /*dio->pages数组下标计数*/
 
 		while (from < to) {
 			unsigned this_chunk_bytes;	/* # of bytes mapped */
@@ -977,7 +977,7 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
 				unsigned long blkmask;
 				unsigned long dio_remainder;
 
-				ret = get_more_blocks(dio, sdio, map_bh);
+				ret = get_more_blocks(dio, sdio, map_bh); /*尽可能多的映射页(物理上连续的block一起映射)*/
 				if (ret) {
 					put_page(page);
 					goto out;
@@ -986,9 +986,10 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
 					goto do_holes;
 
 				sdio->blocks_available =
-						map_bh->b_size >> blkbits;
+						map_bh->b_size >> blkbits;  /*此次映射的块数*/
+				/*初始化下一次IO映射的块号(此次映射的起始块,不一定等于要读取的第一块)*/
 				sdio->next_block_for_io =
-					map_bh->b_blocknr << sdio->blkfactor;
+					map_bh->b_blocknr << sdio->blkfactor; 
 				if (buffer_new(map_bh)) {
 					clean_bdev_aliases(
 						map_bh->b_bdev,
@@ -996,9 +997,16 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
 						map_bh->b_size >> i_blkbits);
 				}
 
-				if (!sdio->blkfactor)
+				if (!sdio->blkfactor) /*以indoe block_size对齐,无需调整block_available next_block_for_io*/
 					goto do_holes;
-
+				
+				/*
+				***若不是以inode block_size对齐而是以更细的粒度对齐(eg: block devices's block_size),
+				***需要调整block_available与next_block_io,why ?
+				***因为block request是以inode block_size为单位进行,而开始块不一定对齐inode block_size
+				***eg:读[0 ... n ... i_block_size-1] [i_block_size,2*i_block_size] [....]
+				***n = block_in_file （开始块）
+				*/
 				blkmask = (1 << sdio->blkfactor) - 1;
 				dio_remainder = (sdio->block_in_file & blkmask);
 
@@ -1014,14 +1022,15 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
 				 * on-disk
 				 */
 				if (!buffer_new(map_bh))
-					sdio->next_block_for_io += dio_remainder;
-				sdio->blocks_available -= dio_remainder;
+					sdio->next_block_for_io += dio_remainder; /*前进到要读取的第一个块*/
+				sdio->blocks_available -= dio_remainder; /*减去前面多读的一截*/
 			}
 do_holes:
 			/* Handle holes */
 			if (!buffer_mapped(map_bh)) {
 				loff_t i_size_aligned;
-
+				
+				/*空洞区域还未分配块号，无法进行直接写操作*/
 				/* AKPM: eargh, -ENOTBLK is a hack */
 				if (dio->op == REQ_OP_WRITE) {
 					put_page(page);
@@ -1040,6 +1049,7 @@ do_holes:
 					put_page(page);
 					goto out;
 				}
+				/*读取空洞部分，清0即可*/
 				zero_user(page, from, 1 << blkbits);
 				sdio->block_in_file++;
 				from += 1 << blkbits;
@@ -1052,6 +1062,7 @@ do_holes:
 			 * is finer than the underlying fs, go check to see if
 			 * we must zero out the start of this block.
 			 */
+			/*当用户buffer、文件偏移、IO长度不是block-size的整数倍数,即操作的是block的一部分,其余未使用的部分需要清0*/
 			if (unlikely(sdio->blkfactor && !sdio->start_zero_done))
 				dio_zero_block(dio, sdio, 0, map_bh);
 
@@ -1059,6 +1070,7 @@ do_holes:
 			 * Work out, in this_chunk_blocks, how much disk we
 			 * can add to this page
 			 */
+			/*以页为单位进行操作：不超过一页数据与真实请求的块数*/
 			this_chunk_blocks = sdio->blocks_available;
 			u = (to - from) >> blkbits;
 			if (this_chunk_blocks > u)
@@ -1071,6 +1083,7 @@ do_holes:
 
 			if (this_chunk_blocks == sdio->blocks_available)
 				sdio->boundary = buffer_boundary(map_bh);
+			/*提交bio请求*/
 			ret = submit_page_section(dio, sdio, page,
 						  from,
 						  this_chunk_bytes,
@@ -1080,6 +1093,7 @@ do_holes:
 				put_page(page);
 				goto out;
 			}
+			/*更新下一次IO请求块号、起始块、可用块数、起始位置*/
 			sdio->next_block_for_io += this_chunk_blocks;
 
 			sdio->block_in_file += this_chunk_blocks;
@@ -1285,7 +1299,7 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 	retval = 0;
 	sdio.blkbits = blkbits;
 	sdio.blkfactor = i_blkbits - blkbits;
-	sdio.block_in_file = offset >> blkbits;
+	sdio.block_in_file = offset >> blkbits; /*文件内请求起始块偏移*/
 
 	sdio.get_block = get_block;
 	dio->end_io = end_io;
@@ -1301,7 +1315,7 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 	dio->should_dirty = (iter->type == ITER_IOVEC);
 	sdio.iter = iter;
 	sdio.final_block_in_request =
-		(offset + iov_iter_count(iter)) >> blkbits;
+		(offset + iov_iter_count(iter)) >> blkbits;  /*请求结束块偏移*/
 
 	/*
 	 * In case of non-aligned buffers, we may need 2 more
