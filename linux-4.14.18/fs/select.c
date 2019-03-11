@@ -484,7 +484,9 @@ static int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
 
 		inp = fds->in; outp = fds->out; exp = fds->ex;
 		rinp = fds->res_in; routp = fds->res_out; rexp = fds->res_ex;
-
+		/*
+		***以BITS_PER_LONG为单位进行轮询操作,调用poll函数<若有数据则返回，无数据则加入等待队列>
+		*/
 		for (i = 0; i < n; ++rinp, ++routp, ++rexp) {
 			unsigned long in, out, ex, all_bits, bit = 1, mask, j;
 			unsigned long res_in = 0, res_out = 0, res_ex = 0;
@@ -500,7 +502,7 @@ static int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
 				struct fd f;
 				if (i >= n)
 					break;
-				if (!(bit & all_bits))
+				if (!(bit & all_bits)) /*跳过没有状态监测的fd*/
 					continue;
 				f = fdget(i);
 				if (f.file) {
@@ -509,20 +511,23 @@ static int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
 					mask = DEFAULT_POLLMASK;
 					if (f_op->poll) {
 						wait_key_set(wait, in, out,
-							     bit, busy_flag);
+							     bit, busy_flag);// 设置当前fd待监测的事件掩码
 						mask = (*f_op->poll)(f.file, wait);
 					}
 					fdput(f);
+					/*设备可读*/
 					if ((mask & POLLIN_SET) && (in & bit)) {
 						res_in |= bit;
 						retval++;
 						wait->_qproc = NULL;
 					}
+					/*设备可写*/
 					if ((mask & POLLOUT_SET) && (out & bit)) {
 						res_out |= bit;
 						retval++;
 						wait->_qproc = NULL;
 					}
+					/*设备异常*/
 					if ((mask & POLLEX_SET) && (ex & bit)) {
 						res_ex |= bit;
 						retval++;
@@ -551,6 +556,7 @@ static int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
 			cond_resched();
 		}
 		wait->_qproc = NULL;
+		/*有读写时间、超时，信号发生结束轮询*/
 		if (retval || timed_out || signal_pending(current))
 			break;
 		if (table.error) {
@@ -578,7 +584,7 @@ static int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
 			expire = timespec64_to_ktime(*end_time);
 			to = &expire;
 		}
-
+		/*进程睡眠*/
 		if (!poll_schedule_timeout(&table, TASK_INTERRUPTIBLE,
 					   to, slack))
 			timed_out = 1;
@@ -613,6 +619,7 @@ int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 		goto out_nofds;
 
 	/* max_fds can increase, so grab it once to avoid race */
+	/*不能超过当前进程最大的文件描述符，避免空转*/
 	rcu_read_lock();
 	fdt = files_fdtable(current->files);
 	max_fds = fdt->max_fds;
@@ -625,6 +632,12 @@ int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 	 * since we used fdset we need to allocate memory in units of
 	 * long-words. 
 	 */
+	/*
+	***以一个文件描述符占一bit来计算，传递进来的这些fd_set需要用掉多少个字
+	***stack_fds大小256 bytes
+	***若n/8<42(256/6),则用stack_fds保存输入输出结果
+	***否则扩大内存进行保存输入输出
+	*/
 	size = FDS_BYTES(n);
 	bits = stack_fds;
 	if (size > sizeof(stack_fds) / 6) {
@@ -663,7 +676,8 @@ int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
 			goto out;
 		ret = 0;
 	}
-
+	
+	/*复制输出结果*/
 	if (set_fd_set(n, inp, fds.res_in) ||
 	    set_fd_set(n, outp, fds.res_out) ||
 	    set_fd_set(n, exp, fds.res_ex))
