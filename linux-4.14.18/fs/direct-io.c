@@ -1166,6 +1166,13 @@ static inline int drop_refcount(struct dio *dio)
  * individual fields and will generate much worse code. This is important
  * for the whole file.
  */
+/*
+***direct IO步骤
+***1.确报direct IO 读写区域是干净的 <filemap_write_and_wait_range>
+***2.get the user pages
+***3.Walk the user pages, and the file, mapping blocks to disk
+***4.emitting BIOs
+*/
 static inline ssize_t
 do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 		      struct block_device *bdev, struct iov_iter *iter,
@@ -1223,7 +1230,7 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 
 			/* will be released by direct_io_worker */
 			inode_lock(inode);
-                        /*？？*/
+                        /*确保直接读区域是干净的,即内存与磁盘数据同步*/
 			retval = filemap_write_and_wait_range(mapping, offset,
 							      end - 1);
 			if (retval) {
