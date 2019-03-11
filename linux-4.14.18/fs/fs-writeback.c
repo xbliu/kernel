@@ -1384,6 +1384,13 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 }
 
 /*
+***linux2.5.26 回写策略：
+***1.每次write时触发后台回写,使脏页保持在一定比例
+***2.分配内存池、释放内存、回收内存、sysrq（紧急情况下重启）过程中使脏页保持在一定比例
+***3.周期性的回写 （定时器实现）
+*/
+
+/*
  * Write out an inode's dirty pages. Either the caller has an active reference
  * on the inode or the inode has I_WILL_FREE set.
  *
