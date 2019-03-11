@@ -845,6 +845,9 @@ submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
 	/*
 	 * Can we just grow the current page's presence in the dio?
 	 */
+	/*
+	***若是页内的下一紧邻区或块的下一紧邻区则进行合并，延迟等待更多的合并项
+	*/
 	if (sdio->cur_page == page &&
 	    sdio->cur_page_offset + sdio->cur_page_len == offset &&
 	    sdio->cur_page_block +
@@ -856,6 +859,7 @@ submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
 	/*
 	 * If there's a deferred page already there then send it.
 	 */
+	/*没有合并的下一紧邻区提交延迟IO*/
 	if (sdio->cur_page) {
 		ret = dio_send_cur_page(dio, sdio, map_bh);
 		put_page(sdio->cur_page);
@@ -863,7 +867,8 @@ submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
 		if (ret)
 			return ret;
 	}
-
+	
+	/*记录当前前的页、页内偏移、读写长度、 物理块号及逻辑块号<文件内>*/
 	get_page(page);		/* It is in dio */
 	sdio->cur_page = page;
 	sdio->cur_page_offset = offset;
@@ -875,6 +880,7 @@ out:
 	 * If sdio->boundary then we want to schedule the IO now to
 	 * avoid metadata seeks.
 	 */
+	/*若是边界则提交IO*/
 	if (sdio->boundary) {
 		ret = dio_send_cur_page(dio, sdio, map_bh);
 		if (sdio->bio)
