@@ -1727,7 +1727,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		/*
 		 * Stop writeback when nr_pages has been consumed
 		 */
-		if (work->nr_pages <= 0)
+		if (work->nr_pages <= 0) //回收了目标页数则退出
 			break;
 
 		/*
@@ -1737,14 +1737,14 @@ static long wb_writeback(struct bdi_writeback *wb,
 		 * after the other works are all done.
 		 */
 		if ((work->for_background || work->for_kupdate) &&
-		    !list_empty(&wb->work_list))
+		    !list_empty(&wb->work_list)) //周期与后台回写任务可能长期运行,故当有新任务到来时则停止处理后台回写任务,避免其它任务处理不及时
 			break;
 
 		/*
 		 * For background writeout, stop when we are below the
 		 * background dirty threshold
 		 */
-		if (work->for_background && !wb_over_bg_thresh(wb))
+		if (work->for_background && !wb_over_bg_thresh(wb)) //当后台任务低于阀值 则不需继续运行了
 			break;
 
 		/*
@@ -1760,8 +1760,10 @@ static long wb_writeback(struct bdi_writeback *wb,
 			oldest_jif = jiffies;
 
 		trace_writeback_start(wb, work);
+		/*b_io队列上的任务已处理完将more_io与dirty_io上的任务移到此上 为什么要分三个队列?*/
 		if (list_empty(&wb->b_io))
 			queue_io(wb, work);
+		/*处理回写 writeback_sb_inodes与__writeback_inodes_wb有什么不同?*/
 		if (work->sb)
 			progress = writeback_sb_inodes(work->sb, wb, work);
 		else
@@ -1791,6 +1793,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		 * we'll just busyloop.
 		 */
 		trace_writeback_wait(wb, work);
+		//等待之前因各种原因导致inode不能回写而放到more_io队列的任务可用
 		inode = wb_inode(wb->b_more_io.prev);
 		spin_lock(&inode->i_lock);
 		spin_unlock(&wb->list_lock);
@@ -1893,6 +1896,7 @@ static long wb_do_writeback(struct bdi_writeback *wb)
 	long wrote = 0;
 
 	set_bit(WB_writeback_running, &wb->state);
+	/*处理work list中wb_writeback_work*/
 	while ((work = get_next_work_item(wb)) != NULL) {
 		trace_writeback_exec(wb, work);
 		wrote += wb_writeback(wb, work);
@@ -1902,8 +1906,8 @@ static long wb_do_writeback(struct bdi_writeback *wb)
 	/*
 	 * Check for periodic writeback, kupdated() style
 	 */
-	wrote += wb_check_old_data_flush(wb);
-	wrote += wb_check_background_flush(wb);
+	wrote += wb_check_old_data_flush(wb); //周期性的回写 处理此刻起dirty_writeback_interval之前脏页
+	wrote += wb_check_background_flush(wb); //后台周期性的回写 所有脏页
 	clear_bit(WB_writeback_running, &wb->state);
 
 	return wrote;
@@ -1921,7 +1925,8 @@ void wb_workfn(struct work_struct *work)
 
 	set_worker_desc("flush-%s", dev_name(wb->bdi->dev));
 	current->flags |= PF_SWAPWRITE;
-
+        /*非紧急work queue 或者 未注册的bdi (backing device info) 一般情况下前者条件成功,这也是回写的正常路径
+	*/
 	if (likely(!current_is_workqueue_rescuer() ||
 		   !test_bit(WB_registered, &wb->state))) {
 		/*
