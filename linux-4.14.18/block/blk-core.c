@@ -828,7 +828,10 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 	q->bio_split = bioset_create(BIO_POOL_SIZE, 0, BIOSET_NEED_BVECS);
 	if (!q->bio_split)
 		goto fail_id;
-
+	/*
+	分配backing_dev_info<初始化预读页等信息>
+	初始化write back<wb_init>
+	*/
 	q->backing_dev_info = bdi_alloc_node(gfp_mask, node_id);
 	if (!q->backing_dev_info)
 		goto fail_split;
@@ -949,6 +952,14 @@ struct request_queue *blk_init_queue(request_fn_proc *rfn, spinlock_t *lock)
 }
 EXPORT_SYMBOL(blk_init_queue);
 
+/*
+初始化 block queue
+目前看三个注意的地方:
+	request_fn_proc
+	make_request_fn
+	struct elevator_type
+什么时候调用blcok queue???
+*/
 struct request_queue *
 blk_init_queue_node(request_fn_proc *rfn, spinlock_t *lock, int node_id)
 {
@@ -972,7 +983,10 @@ EXPORT_SYMBOL(blk_init_queue_node);
 
 static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio);
 
-
+/*
+init make request<blk_queue_bio>
+init elevator <default to using mq-deadline,then noop>
+*/
 int blk_init_allocated_queue(struct request_queue *q)
 {
 	WARN_ON_ONCE(q->mq_ops);
