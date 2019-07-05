@@ -830,6 +830,12 @@ static inline void blk_clear_rl_full(struct request_list *rl, bool sync)
 	rl->flags &= ~flag;
 }
 
+/*
+以下操作无需合并:
+1)scsi/driver private request
+2)REQ_OP_FLUSH/REQ_OP_WRITE_ZEROES操作
+3)REQ_NOMERGE_FLAGS为true <cmd_flags/rq_flags/bi_opf>
+*/
 static inline bool rq_mergeable(struct request *rq)
 {
 	if (blk_rq_is_passthrough(rq))
