@@ -774,6 +774,15 @@ int blk_attempt_req_merge(struct request_queue *q, struct request *rq,
 	return 0;
 }
 
+/*
+***哪些情况下不可以合并:
+1)有一些req_op无需合<如sici flush write_zeros>
+1)request与bio操作不一样
+2)request与bio数据方向不一样<不是同样的读/写 >
+3)操作的非同一的设备或者是特殊的请求
+4)对于写同一扇区多次,必须缓存一样<page与offset一样>
+5)非同样的写命中次数
+*/
 bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 {
 	if (!rq_mergeable(rq) || !bio_mergeable(bio))
