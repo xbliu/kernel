@@ -1874,7 +1874,7 @@ get_rq:
 	 * Grab a free request. This is might sleep but can not fail.
 	 * Returns with the queue unlocked.
 	 */
-	req = get_request(q, bio->bi_opf, bio, GFP_NOIO);
+	req = get_request(q, bio->bi_opf, bio, GFP_NOIO); /*a1:新建request*/
 	if (IS_ERR(req)) {
 		__wbt_done(q->rq_wb, wb_acct);
 		if (PTR_ERR(req) == -ENOMEM)
@@ -1913,14 +1913,19 @@ get_rq:
 			struct request *last = list_entry_rq(plug->list.prev);
 			if (request_count >= BLK_MAX_REQUEST_COUNT ||
 			    blk_rq_bytes(last) >= BLK_PLUG_FLUSH_SIZE) {
-				blk_flush_plug_list(plug, false);
+			    /*
+			    a3:plug->list中含有request_queue的request_count>=BLK_MAX_REQUEST_COUNT
+			      将其加入到io 调度队列 blk_flush_plug_list-->__elv_add_request
+			    */
+				blk_flush_plug_list(plug, false); 
 				trace_block_plug(q);
 			}
 		}
-		list_add_tail(&req->queuelist, &plug->list);
+		list_add_tail(&req->queuelist, &plug->list); /*a2:将request加入到plug->list列表中*/
 		blk_account_io_start(req, true);
 	} else {
 		spin_lock_irq(q->queue_lock);
+		/*若无plug则将request直接加入到io调度队列 add_acct_request-->__elv_add_request(q, rq, where);*/
 		add_acct_request(q, req, where);
 		__blk_run_queue(q);
 out_unlock:
