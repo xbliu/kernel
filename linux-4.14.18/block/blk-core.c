@@ -2273,6 +2273,7 @@ blk_qc_t submit_bio(struct bio *bio)
 	 * If it's a regular read/write or a barrier with data attached,
 	 * go through the normal accounting stuff before submission.
 	 */
+	/*bio 有数据,则表明不是第一次读/写了,则进行统计*/
 	if (bio_has_data(bio)) {
 		unsigned int count;
 
