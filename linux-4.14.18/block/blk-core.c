@@ -3379,8 +3379,13 @@ void blk_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 	if (list_empty(&plug->list))
 		return;
 
-	list_splice_init(&plug->list, &list);
-
+	list_splice_init(&plug->list, &list); /*a1.从plug->list分离list*/
+	/*
+	a2.排序
+	排序规则如下:
+	1)request的request_queue不一样,比request_queue的地址大小
+	2)request的request_queue一样,比request的sector大小
+	*/
 	list_sort(NULL, &list, plug_rq_cmp);
 
 	q = NULL;
@@ -3393,9 +3398,9 @@ void blk_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 	local_irq_save(flags);
 	while (!list_empty(&list)) {
 		rq = list_entry_rq(list.next);
-		list_del_init(&rq->queuelist);
+		list_del_init(&rq->queuelist); /*a3.从list中取出*/
 		BUG_ON(!rq->q);
-		if (rq->q != q) {
+		if (rq->q != q) { /*a5.切换request_queue并触发调度<驱动>---激活设备*/
 			/*
 			 * This drops the queue lock
 			 */
@@ -3417,6 +3422,7 @@ void blk_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 		/*
 		 * rq is already accounted, so use raw insert
 		 */
+		/*a4.加入到io调度队列*/
 		if (op_is_flush(rq->cmd_flags))
 			__elv_add_request(q, rq, ELEVATOR_INSERT_FLUSH);
 		else
@@ -3428,7 +3434,7 @@ void blk_flush_plug_list(struct blk_plug *plug, bool from_schedule)
 	/*
 	 * This drops the queue lock
 	 */
-	if (q)
+	if (q) /*a5.切换request_queue并触发调度<驱动>---激活设备*/
 		queue_unplugged(q, depth, from_schedule);
 
 	local_irq_restore(flags);
