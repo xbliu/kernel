@@ -1839,6 +1839,7 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 	 * Check if we can merge with the plugged list before grabbing
 	 * any locks.
 	 */
+	/*b1.尝试合并到plugged list中*/
 	if (!blk_queue_nomerges(q)) {
 		if (blk_attempt_plug_merge(q, bio, &request_count, NULL))
 			return BLK_QC_T_NONE;
@@ -1846,7 +1847,8 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 		request_count = blk_plug_queued_count(q);
 
 	spin_lock_irq(q->queue_lock);
-
+	
+	/*b2.尝试合并到request_queue中*/
 	switch (elv_merge(q, &req, bio)) {
 	case ELEVATOR_BACK_MERGE:
 		if (!bio_attempt_back_merge(q, req, bio))
