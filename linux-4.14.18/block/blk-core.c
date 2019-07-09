@@ -1893,6 +1893,7 @@ get_rq:
 	 * We don't worry about that case for efficiency. It won't happen
 	 * often, and the elevators are able to handle it.
 	 */
+	/*a2:初始化request的起始扇区(__sector)、大小(__data_len)、io优先级(ioprio)、目标设备(rq_disk)*/
 	blk_init_request_from_bio(req, bio);
 
 	if (test_bit(QUEUE_FLAG_SAME_COMP, &q->queue_flags))
@@ -1911,21 +1912,22 @@ get_rq:
 			trace_block_plug(q);
 		else {
 			struct request *last = list_entry_rq(plug->list.prev);
+			/*
+			a4:以下情况将其加入到io调度队列 blk_flush_plug_list-->__elv_add_request:
+			    1)plug->list中含有request_queue的request_count>=BLK_MAX_REQUEST_COUNT
+			    2)上一个request请求的大小大于BLK_PLUG_FLUSH_SIZE
+			*/
 			if (request_count >= BLK_MAX_REQUEST_COUNT ||
 			    blk_rq_bytes(last) >= BLK_PLUG_FLUSH_SIZE) {
-			    /*
-			    a3:plug->list中含有request_queue的request_count>=BLK_MAX_REQUEST_COUNT
-			      将其加入到io 调度队列 blk_flush_plug_list-->__elv_add_request
-			    */
 				blk_flush_plug_list(plug, false); 
 				trace_block_plug(q);
 			}
 		}
-		list_add_tail(&req->queuelist, &plug->list); /*a2:将request加入到plug->list列表中*/
+		list_add_tail(&req->queuelist, &plug->list); /*a3:将request加入到plug->list列表中*/
 		blk_account_io_start(req, true);
 	} else {
 		spin_lock_irq(q->queue_lock);
-		/*若无plug则将request直接加入到io调度队列 add_acct_request-->__elv_add_request(q, rq, where);*/
+		/*a3':若无plug则将request直接加入到io调度队列 add_acct_request-->__elv_add_request(q, rq, where);*/
 		add_acct_request(q, req, where);
 		__blk_run_queue(q);
 out_unlock:
