@@ -1196,7 +1196,7 @@ static struct request *__get_request(struct request_list *rl, unsigned int op,
 
 	if (unlikely(blk_queue_dying(q)))
 		return ERR_PTR(-ENODEV);
-
+	/*may_queue 用来做什么?????*/
 	may_queue = elv_may_queue(q, op);
 	if (may_queue == ELV_MQUEUE_NO)
 		goto rq_starved;
@@ -1262,7 +1262,12 @@ static struct request *__get_request(struct request_list *rl, unsigned int op,
 	if (blk_queue_io_stat(q))
 		rq_flags |= RQF_IO_STAT;
 	spin_unlock_irq(q->queue_lock);
-
+	
+	/*
+	从request_list的rq_pool中分配request,初始化
+	rq->q = q <request_queue>
+	rq->rl = rl <request_list>
+	*/
 	/* allocate and init request */
 	rq = mempool_alloc(rl->rq_pool, gfp_mask);
 	if (!rq)
