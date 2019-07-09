@@ -818,6 +818,12 @@ bool blk_rq_merge_ok(struct request *rq, struct bio *bio)
 	return true;
 }
 
+/*
+DISCARD_MERGE: REQ_OP_DISCARD && max_discard_segments > 1
+BACK_MERGE: request sector_start + size(sector unit) == bi_sector
+ELEVATOR_FRONT_MERGE: request sector_start = bi_sector + bi_size(sector unit)
+question:若sector不是紧邻而是有一部分重合呢？该如何处理?
+*/
 enum elv_merge blk_try_merge(struct request *rq, struct bio *bio)
 {
 	if (req_op(rq) == REQ_OP_DISCARD &&
