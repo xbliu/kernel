@@ -1630,7 +1630,7 @@ bool bio_attempt_back_merge(struct request_queue *q, struct request *req,
 
 	if ((req->cmd_flags & REQ_FAILFAST_MASK) != ff)
 		blk_rq_set_mixed_merge(req);
-
+	/*将new bio加入到req->bio列表尾部*/
 	req->biotail->bi_next = bio;
 	req->biotail = bio;
 	req->__data_len += bio->bi_iter.bi_size;

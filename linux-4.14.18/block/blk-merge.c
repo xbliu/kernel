@@ -500,11 +500,14 @@ no_merge:
 int ll_back_merge_fn(struct request_queue *q, struct request *req,
 		     struct bio *bio)
 {
+	/*涉及到bio_vec,需要往前再分析才能看懂######*/
 	if (req_gap_back_merge(req, bio))
 		return 0;
+	/*???*/
 	if (blk_integrity_rq(req) &&
 	    integrity_req_gap_back_merge(req, bio))
 		return 0;
+	/*若request的请求sector与bio的secotor大于request_queue的sector限制则不能合并*/
 	if (blk_rq_sectors(req) + bio_sectors(bio) >
 	    blk_rq_get_max_sectors(req, blk_rq_pos(req))) {
 		req_set_nomerge(q, req);
