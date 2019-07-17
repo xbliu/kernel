@@ -1630,7 +1630,7 @@ bool bio_attempt_back_merge(struct request_queue *q, struct request *req,
 
 	if ((req->cmd_flags & REQ_FAILFAST_MASK) != ff)
 		blk_rq_set_mixed_merge(req);
-	/*将new bio加入到req->bio列表尾部*/
+	/*new bio加入到req->bio列表尾部,更改大小(因为是向后合并bio,故起始sector未变)*/
 	req->biotail->bi_next = bio;
 	req->biotail = bio;
 	req->__data_len += bio->bi_iter.bi_size;
@@ -1652,10 +1652,10 @@ bool bio_attempt_front_merge(struct request_queue *q, struct request *req,
 
 	if ((req->cmd_flags & REQ_FAILFAST_MASK) != ff)
 		blk_rq_set_mixed_merge(req);
-
+	/*new bio加入到req->bio列表头部*/
 	bio->bi_next = req->bio;
 	req->bio = bio;
-
+	/*更改起始扇区、大小、优先级(因为是向前合并bio,故起始sector、大小都发生了变化)*/
 	req->__sector = bio->bi_iter.bi_sector;
 	req->__data_len += bio->bi_iter.bi_size;
 	req->ioprio = ioprio_best(req->ioprio, bio_prio(bio));
@@ -1848,18 +1848,27 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 
 	spin_lock_irq(q->queue_lock);
 	
-	/*b2.尝试合并到request_queue中*/
+	/*
+	****b2.尝试合并到request_queue中
+	合并分为两步(分为两类):
+		1)bio合并到request中:
+			向后合并插入到request->bio列表尾部,request的大小发生变化
+			向前合并插入到request->bio列表头部,request的起始扇区、大小都发生了变化
+		2)若bio能合并到request,则request的起始扇区与大小发生了变化,此时request之间就有可能能够合并
+			bio向后合并,则尝试request与next requst合并
+			bio向前合并,则尝试request与prev requst合并
+	*/
 	switch (elv_merge(q, &req, bio)) {
 	case ELEVATOR_BACK_MERGE:
-		if (!bio_attempt_back_merge(q, req, bio)) /*bio尝试合并到request queue中，若不能，则新建请求*/
+		if (!bio_attempt_back_merge(q, req, bio)) /*bio尝试合并到request中,若不能,则新建请求*/
 			break;
-		/*可以合并到request queue,通知调度器做相应的处理*/
+		/*bio可以合并到request中,通知调度队列 bio发生了变化*/
 		elv_bio_merged(q, req, bio);
-		/*寻找进阶合并:试图进行后向进阶合并*/
+		/*寻找进阶(request级)合并:试图进行后向进阶合并*/
 		free = attempt_back_merge(q, req);
-		/*如果产生了进阶合并，则被合并的request可以释放了,可调用blk_put_request进行回收。
-		如果只产生了bio合并，合并后的request的长度和扇区地址都会发生变化，
-		需要调用elv_merged_request->elevator_merged_fn来更新合并后的请求在调度队列的位置*/
+		/*如果产生了进阶合并,则被合并的request可以释放了,可调用__blk_put_request进行回收。
+		如果只产生了bio合并,合并后的request的长度和扇区地址都会发生变化，
+		需要调用elv_merged_request->elevator_merged_fn 通知调度队列request发生了变化*/
 		if (free)
 			__blk_put_request(q, free);
 		else
