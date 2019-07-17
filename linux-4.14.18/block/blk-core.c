@@ -1851,10 +1851,15 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 	/*b2.尝试合并到request_queue中*/
 	switch (elv_merge(q, &req, bio)) {
 	case ELEVATOR_BACK_MERGE:
-		if (!bio_attempt_back_merge(q, req, bio))
+		if (!bio_attempt_back_merge(q, req, bio)) /*bio尝试合并到request queue中，若不能，则新建请求*/
 			break;
+		/*可以合并到request queue,通知调度器做相应的处理*/
 		elv_bio_merged(q, req, bio);
+		/*寻找进阶合并:试图进行后向进阶合并*/
 		free = attempt_back_merge(q, req);
+		/*如果产生了进阶合并，则被合并的request可以释放了,可调用blk_put_request进行回收。
+		如果只产生了bio合并，合并后的request的长度和扇区地址都会发生变化，
+		需要调用elv_merged_request->elevator_merged_fn来更新合并后的请求在调度队列的位置*/
 		if (free)
 			__blk_put_request(q, free);
 		else
