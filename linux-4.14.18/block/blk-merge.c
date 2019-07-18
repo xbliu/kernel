@@ -565,7 +565,7 @@ static int ll_merge_requests_fn(struct request_queue *q, struct request *req,
 	 * First check if the either of the requests are re-queued
 	 * requests.  Can't merge them if they are.
 	 */
-	if (req_no_special_merge(req) || req_no_special_merge(next))
+	if (req_no_special_merge(req) || req_no_special_merge(next)) /*重新入队的request,不合并*/
 		return 0;
 
 	if (req_gap_back_merge(req, next->bio))
@@ -575,9 +575,10 @@ static int ll_merge_requests_fn(struct request_queue *q, struct request *req,
 	 * Will it become too large?
 	 */
 	if ((blk_rq_sectors(req) + blk_rq_sectors(next)) >
-	    blk_rq_get_max_sectors(req, blk_rq_pos(req)))
+	    blk_rq_get_max_sectors(req, blk_rq_pos(req))) /*合并后操作扇区的大小超过限制,则不合并*/
 		return 0;
-
+	
+	/*更新segment counts*/
 	total_phys_segments = req->nr_phys_segments + next->nr_phys_segments;
 	if (blk_phys_contig_segment(q, req->biotail, next->bio)) {
 		if (req->nr_phys_segments == 1)
@@ -655,32 +656,32 @@ static struct request *attempt_merge(struct request_queue *q,
 	if (!q->mq_ops)
 		lockdep_assert_held(q->queue_lock);
 
-	if (!rq_mergeable(req) || !rq_mergeable(next))
+	if (!rq_mergeable(req) || !rq_mergeable(next)) /*request不需要合并*/
 		return NULL;
 
-	if (req_op(req) != req_op(next))
+	if (req_op(req) != req_op(next)) /*不同的操作*/
 		return NULL;
 
 	/*
 	 * not contiguous
 	 */
-	if (blk_rq_pos(req) + blk_rq_sectors(req) != blk_rq_pos(next))
+	if (blk_rq_pos(req) + blk_rq_sectors(req) != blk_rq_pos(next)) /*两个request没有紧邻(扇区未连续)*/
 		return NULL;
 
 	if (rq_data_dir(req) != rq_data_dir(next)
 	    || req->rq_disk != next->rq_disk
-	    || req_no_special_merge(next))
+	    || req_no_special_merge(next)) /*数据方向不一样或不是同一设备*/
 		return NULL;
 
 	if (req_op(req) == REQ_OP_WRITE_SAME &&
-	    !blk_write_same_mergeable(req->bio, next->bio))
+	    !blk_write_same_mergeable(req->bio, next->bio)) /*写同一扇区操作，但各自操作的扇区不一样*/
 		return NULL;
 
 	/*
 	 * Don't allow merge of different write hints, or for a hint with
 	 * non-hint IO.
 	 */
-	if (req->write_hint != next->write_hint)
+	if (req->write_hint != next->write_hint) /*hints 有什么作用?????*/
 		return NULL;
 
 	/*
@@ -711,14 +712,17 @@ static struct request *attempt_merge(struct request_queue *q,
 	 * the merged requests to be the current request
 	 * for accounting purposes.
 	 */
-	if (time_after(req->start_time, next->start_time))
+	if (time_after(req->start_time, next->start_time)) /*更新start_time,取两者最早的时间*/
 		req->start_time = next->start_time;
-
+	/*将next->bio列表并入到req->bio列表*/
 	req->biotail->bi_next = next->bio;
 	req->biotail = next->biotail;
 
 	req->__data_len += blk_rq_bytes(next);
-
+	
+	/*
+	通知调度队列进行了合并(调度队列进行额外的操作)，更新last_merge与其在hash表中的位置
+	*/
 	elv_merge_requests(q, req, next);
 
 	/*
