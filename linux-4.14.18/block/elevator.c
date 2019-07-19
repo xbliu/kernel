@@ -387,6 +387,16 @@ void elv_dispatch_sort(struct request_queue *q, struct request *rq)
 	q->nr_sorted--;
 
 	boundary = q->end_sector;
+	/*
+	<q->end_sector 有瓶颈时最近加入的一个或者是blk最近取的一个 ?????>
+	插入规则,比较sector大小(临近规则？？？):
+	1)req->__sector >= boundary(q->end_sector) > pos->__sector : 下一个继续比较
+	2)pos->__sector >= boundary(q->end_sector) > req->__sector : insert
+	3)pos->__sector > req->__sector >= boundary(q->end_sector) : 下一个继续比较
+	4)req->__sector >= pos->__sector >= boundary(q->end_sector) : insert
+	5)boundary(q->end_sector) > pos->__sector > req->__sector : 下一个继续比较
+	6)boundary(q->end_sector) > req->__sector >= pos->__sector : insert
+	*/
 	list_for_each_prev(entry, &q->queue_head) {
 		struct request *pos = list_entry_rq(entry);
 
