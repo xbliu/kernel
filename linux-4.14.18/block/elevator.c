@@ -182,6 +182,15 @@ static void elevator_release(struct kobject *kobj)
 	kfree(e);
 }
 
+/*
+***
+Q:如何指定IO调度?
+A:
+1)name
+2)chosen_elevator
+3)默认IO调度:多队列设备 mq-deadline 单队列设备:none
+***
+*/
 int elevator_init(struct request_queue *q, char *name)
 {
 	struct elevator_type *e = NULL;
@@ -201,7 +210,7 @@ int elevator_init(struct request_queue *q, char *name)
 	q->end_sector = 0;
 	q->boundary_rq = NULL;
 
-	if (name) {
+	if (name) { /*a1.根椐名字指定IO调度*/
 		e = elevator_get(name, true);
 		if (!e)
 			return -EINVAL;
@@ -213,14 +222,14 @@ int elevator_init(struct request_queue *q, char *name)
 	 * as we could be running off async and request_module() isn't
 	 * allowed from async.
 	 */
-	if (!e && !q->mq_ops && *chosen_elevator) {
+	if (!e && !q->mq_ops && *chosen_elevator) { /*a2.根椐chosen_elevator指定IO调度*/
 		e = elevator_get(chosen_elevator, false);
 		if (!e)
 			printk(KERN_ERR "I/O scheduler %s not found\n",
 							chosen_elevator);
 	}
 
-	if (!e) {
+	if (!e) { /*a3.采取默认IO调度:多队列设备 mq-deadline 单队列设备:none*/
 		/*
 		 * For blk-mq devices, we default to using mq-deadline,
 		 * if available, for single queue devices. If deadline
@@ -895,6 +904,9 @@ void elv_unregister_queue(struct request_queue *q)
 }
 EXPORT_SYMBOL(elv_unregister_queue);
 
+/*
+***elv_list 管理所有的IO调度算法
+*/
 int elv_register(struct elevator_type *e)
 {
 	char *def = "";
