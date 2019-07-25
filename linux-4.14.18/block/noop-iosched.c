@@ -12,12 +12,20 @@ struct noop_data {
 	struct list_head queue;
 };
 
+/*
+***iosched如何合并request***
+*合并由框架层做了，这里只移除合并的request 
+*/
 static void noop_merged_requests(struct request_queue *q, struct request *rq,
 				 struct request *next)
 {
 	list_del_init(&next->queuelist);
 }
 
+/*
+***如何从iosched取出request***
+*按FIFO方式从列表中依次取出
+*/
 static int noop_dispatch(struct request_queue *q, int force)
 {
 	struct noop_data *nd = q->elevator->elevator_data;
@@ -32,6 +40,10 @@ static int noop_dispatch(struct request_queue *q, int force)
 	return 0;
 }
 
+/*
+***request如何加入到此 iosched***
+*加入到队列尾部
+*/
 static void noop_add_request(struct request_queue *q, struct request *rq)
 {
 	struct noop_data *nd = q->elevator->elevator_data;
@@ -59,26 +71,30 @@ noop_latter_request(struct request_queue *q, struct request *rq)
 	return list_next_entry(rq, queuelist);
 }
 
+/*
+***init 与 exit 操作***
+*必须分配elv与拥有自已的queue
+*/
 static int noop_init_queue(struct request_queue *q, struct elevator_type *e)
 {
 	struct noop_data *nd;
 	struct elevator_queue *eq;
 
-	eq = elevator_alloc(q, e);
+	eq = elevator_alloc(q, e); /*a1.alloc elv*/
 	if (!eq)
 		return -ENOMEM;
 
-	nd = kmalloc_node(sizeof(*nd), GFP_KERNEL, q->node);
+	nd = kmalloc_node(sizeof(*nd), GFP_KERNEL, q->node); /*a2.alloc private data*/
 	if (!nd) {
 		kobject_put(&eq->kobj);
 		return -ENOMEM;
 	}
 	eq->elevator_data = nd;
 
-	INIT_LIST_HEAD(&nd->queue);
+	INIT_LIST_HEAD(&nd->queue);  /*a3.init elv queue*/
 
 	spin_lock_irq(q->queue_lock);
-	q->elevator = eq;
+	q->elevator = eq; /**/
 	spin_unlock_irq(q->queue_lock);
 	return 0;
 }
@@ -122,3 +138,11 @@ module_exit(noop_exit);
 MODULE_AUTHOR("Jens Axboe");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("No-op IO scheduler");
+
+/*
+*** iosched实现需要从以下几个方面考虑:
+*** 1)request如何加入到此 iosched
+*** 2)如何从iosched取出request
+*** 3)iosched如何合并request {合并分两种情况：向前合并与向后合并,故如何取出request前后临近的request}
+*** 4)init 与 exit 操作
+*/
