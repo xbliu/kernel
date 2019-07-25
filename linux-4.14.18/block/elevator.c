@@ -43,6 +43,14 @@
 #include "blk-mq-sched.h"
 #include "blk-wbt.h"
 
+/**
+***提供给上层的接口***
+1)elevator_init
+2)elv_register
+3)__elv_add_request
+4)bio_merge/merge_request相关接口
+**/
+
 static DEFINE_SPINLOCK(elv_list_lock);
 static LIST_HEAD(elv_list);
 
@@ -649,6 +657,11 @@ void elv_drain_elevator(struct request_queue *q)
 	}
 }
 
+/*
+*** barrier IO 作为一期分析??????
+***ELEVATOR_INSERT_FRONT/ELEVATOR_INSERT_BACK 用于barrier IO.
+***barrier IO:顺序不能乱,先于它IO先执行,后于它的IO后执行.
+*/
 void __elv_add_request(struct request_queue *q, struct request *rq, int where)
 {
 	trace_block_rq_insert(q, rq);
