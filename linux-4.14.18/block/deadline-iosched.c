@@ -125,6 +125,9 @@ static void deadline_remove_request(struct request_queue *q, struct request *rq)
 	deadline_del_rq_rb(dd, rq);
 }
 
+/*
+以bio的扇区为key查寻req,若有则表示可能可以向前合并
+*/
 static enum elv_merge
 deadline_merge(struct request_queue *q, struct request **req, struct bio *bio)
 {
@@ -151,6 +154,10 @@ deadline_merge(struct request_queue *q, struct request **req, struct bio *bio)
 	return ELEVATOR_NO_MERGE;
 }
 
+/*
+*** 3.1)合并完后是否影响iosched即合并后期处理
+*若是向前合并,则扇区大小改变,故需重新加入到rb树中  ???
+*/
 static void deadline_merged_request(struct request_queue *q,
 				    struct request *req, enum elv_merge type)
 {
@@ -165,6 +172,11 @@ static void deadline_merged_request(struct request_queue *q,
 	}
 }
 
+/*
+***iosched如何合并request {合并分两种情况：向前合并与向后合并,故如何取出request前后临近的request}
+*1)若next expires小于req,将next queue list下的bio移动到req queue list,并将next 的expire time分配给req
+*2)若next expires大于req 如何处理呢?
+*/
 static void
 deadline_merged_requests(struct request_queue *q, struct request *req,
 			 struct request *next)
@@ -184,7 +196,7 @@ deadline_merged_requests(struct request_queue *q, struct request *req,
 	/*
 	 * kill knowledge of next, this one is a goner
 	 */
-	deadline_remove_request(q, next);
+	deadline_remove_request(q, next); //从fifo list与rb tree中移除next
 }
 
 /*
@@ -498,3 +510,12 @@ module_exit(deadline_exit);
 MODULE_AUTHOR("Jens Axboe");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("deadline IO scheduler");
+
+/*
+*** iosched实现需要从以下几个方面考虑:
+*** 1)request如何加入到此 iosched
+*** 2)如何从iosched取出request
+*** 3)iosched如何合并request {合并分两种情况：向前合并与向后合并,故如何取出request前后临近的request}
+*** 3.1)合并完后是否影响iosched即合并后期处理
+*** 4)init 与 exit 操作
+*/
