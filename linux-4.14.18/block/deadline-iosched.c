@@ -94,19 +94,24 @@ deadline_del_rq_rb(struct deadline_data *dd, struct request *rq)
 /*
  * add rq to rbtree and fifo
  */
+/*
+***request如何加入到此 iosched***
+**分别加入到红黑树与fifo列表中，红黑树以扇区排序,fifo以时间先后取出
+**
+*/
 static void
 deadline_add_request(struct request_queue *q, struct request *rq)
 {
 	struct deadline_data *dd = q->elevator->elevator_data;
-	const int data_dir = rq_data_dir(rq);
+	const int data_dir = rq_data_dir(rq); //a1）获取数据方向(RW/RD)
 
-	deadline_add_rq_rb(dd, rq);
+	deadline_add_rq_rb(dd, rq); //a2)加入到红黑树中
 
 	/*
 	 * set expire time and add to fifo list
 	 */
 	rq->fifo_time = jiffies + dd->fifo_expire[data_dir];
-	list_add_tail(&rq->queuelist, &dd->fifo_list[data_dir]);
+	list_add_tail(&rq->queuelist, &dd->fifo_list[data_dir]); //a3)记录req的超时时间并加入到fifo列表中
 }
 
 /*
@@ -204,7 +209,7 @@ deadline_move_request(struct deadline_data *dd, struct request *rq)
 
 	dd->next_rq[READ] = NULL;
 	dd->next_rq[WRITE] = NULL;
-	dd->next_rq[data_dir] = deadline_latter_request(rq);
+	dd->next_rq[data_dir] = deadline_latter_request(rq); //取下一个req放入到next_rq数组中
 
 	/*
 	 * take it off the sort and fifo list, move
@@ -234,6 +239,14 @@ static inline int deadline_check_fifo(struct deadline_data *dd, int ddir)
  * deadline_dispatch_requests selects the best request according to
  * read/write expire, fifo_batch, etc
  */
+/*
+***如何从iosched取出request
+**1)优先读操作但次数不能超过writes_starved
+**2)写操作并starvd重置
+**3)批量操作<读写均可>,但次数不能超过fifo_batch
+**Q:dd->next_rq哪里赋值
+**A:deadline_move_request-->dd->next_rq[data_dir] = deadline_latter_request(rq)
+*/
 static int deadline_dispatch_requests(struct request_queue *q, int force)
 {
 	struct deadline_data *dd = q->elevator->elevator_data;
@@ -249,7 +262,9 @@ static int deadline_dispatch_requests(struct request_queue *q, int force)
 		rq = dd->next_rq[WRITE];
 	else
 		rq = dd->next_rq[READ];
-
+	/*
+	OP3.批量操作<batching小于fifo_batch>
+	*/
 	if (rq && dd->batching < dd->fifo_batch)
 		/* we have a next request are still entitled to batch */
 		goto dispatch_request;
@@ -258,7 +273,11 @@ static int deadline_dispatch_requests(struct request_queue *q, int force)
 	 * at this point we are not running a batch. select the appropriate
 	 * data direction (read / write)
 	 */
-
+	/*
+	OP1.读操作
+	1)优先读,每读一次starved加一 <优先读但不能饿死写,故设置了读操作次数/写饥饿次数>
+	2)当starved>=writes_starved时,进行写
+	*/
 	if (reads) {
 		BUG_ON(RB_EMPTY_ROOT(&dd->sort_list[READ]));
 
@@ -273,7 +292,9 @@ static int deadline_dispatch_requests(struct request_queue *q, int force)
 	/*
 	 * there are either no reads or writes have been starved
 	 */
-
+	/*
+	OP2.写操作,每次写starved重置
+	*/
 	if (writes) {
 dispatch_writes:
 		BUG_ON(RB_EMPTY_ROOT(&dd->sort_list[WRITE]));
@@ -287,6 +308,13 @@ dispatch_writes:
 
 	return 0;
 
+	/*
+	a3.取request规则,批量操作清0
+	1)从fifo队列中取 
+	   <同方向有req<fifo list第一个>等待超时>
+	   <与上一个请求不在同一数据方向>
+	2)继续从同数据方向取下一个
+	*/
 dispatch_find_request:
 	/*
 	 * we are not running a batch, find best request for selected data_dir
@@ -308,6 +336,9 @@ dispatch_find_request:
 
 	dd->batching = 0;
 
+	/*
+	a4.将req移动到分发queue,并将下一个req放到同方向next_req中
+	*/
 dispatch_request:
 	/*
 	 * rq is the selected appropriate request.
