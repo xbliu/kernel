@@ -3651,6 +3651,13 @@ static void cfq_exit_icq(struct io_cq *icq)
 	}
 }
 
+/*
+*给ioprio优先级赋值,IO PRIV分为四类：
+IOPRIO_CLASS_NONE
+IOPRIO_CLASS_RT
+IOPRIO_CLASS_BE
+IOPRIO_CLASS_IDLE
+*/
 static void cfq_init_prio_data(struct cfq_queue *cfqq, struct cfq_io_cq *cic)
 {
 	struct task_struct *tsk = current;
@@ -4068,6 +4075,11 @@ static void cfq_preempt_queue(struct cfq_data *cfqd, struct cfq_queue *cfqq)
  * Called when a new fs request (rq) is added (to cfqq). Check if there's
  * something we should do about it
  */
+ /*
+ 以下两种情况将elv中request出队:
+ 1)cfq_queue为当前有效queue且在等待数据到来,blk_rq_bytes(rq) > PAGE_SIZE || cfqd->busy_queues > 1
+ 2)cfq_queue为等待queue,但允许抢占
+ */
 static void
 cfq_rq_enqueued(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 		struct request *rq)
@@ -4082,7 +4094,7 @@ cfq_rq_enqueued(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 	cfq_update_io_seektime(cfqd, cfqq, rq);
 	cfq_update_idle_window(cfqd, cfqq, cic);
 
-	cfqq->last_request_pos = blk_rq_pos(rq) + blk_rq_sectors(rq);
+	cfqq->last_request_pos = blk_rq_pos(rq) + blk_rq_sectors(rq);//更新扇区大小
 
 	if (cfqq == cfqd->active_queue) {
 		/*
@@ -4118,17 +4130,23 @@ cfq_rq_enqueued(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 	}
 }
 
+/*
+***request如何加入到此 iosched***
+*1)初始化cfq_queue io prio
+*2)将request加入到cfq_queue->fifo队列,按时间排序
+*3)将request加入到cfq_queue rb_tree中,按扇区排序
+*/
 static void cfq_insert_request(struct request_queue *q, struct request *rq)
 {
 	struct cfq_data *cfqd = q->elevator->elevator_data;
 	struct cfq_queue *cfqq = RQ_CFQQ(rq);
 
 	cfq_log_cfqq(cfqd, cfqq, "insert_request");
-	cfq_init_prio_data(cfqq, RQ_CIC(rq));
+	cfq_init_prio_data(cfqq, RQ_CIC(rq)); //初始化ioprio<io 优先级>
 
 	rq->fifo_time = ktime_get_ns() + cfqd->cfq_fifo_expire[rq_is_sync(rq)];
-	list_add_tail(&rq->queuelist, &cfqq->fifo);
-	cfq_add_rq_rb(rq);
+	list_add_tail(&rq->queuelist, &cfqq->fifo);//记录超时时间,加入到cfq_queue队列尾部
+	cfq_add_rq_rb(rq); //加入到cfq_queue红黑树中
 	cfqg_stats_update_io_add(RQ_CFQG(rq), cfqd->serving_group,
 				 rq->cmd_flags);
 	cfq_rq_enqueued(cfqd, cfqq, rq);
@@ -4911,3 +4929,12 @@ module_exit(cfq_exit);
 MODULE_AUTHOR("Jens Axboe");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Completely Fair Queueing IO scheduler");
+
+/*
+*** iosched实现需要从以下几个方面考虑:
+*** 1)request如何加入到此 iosched
+*** 2)如何从iosched取出request
+*** 3)iosched如何合并request {合并分两种情况：向前合并与向后合并,故如何取出request前后临近的request}
+*** 4)init 与 exit 操作
+*/
+
