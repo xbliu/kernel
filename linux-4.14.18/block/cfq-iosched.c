@@ -2540,6 +2540,11 @@ static void cfq_bio_merged(struct request_queue *q, struct request *req,
 	cfqg_stats_update_io_merged(RQ_CFQG(req), bio->bi_opf);
 }
 
+/*
+***iosched如何合并request 
+1)如何保证next fifo_time早于rq？
+2)rr是什么？
+*/
 static void
 cfq_merged_requests(struct request_queue *q, struct request *rq,
 		    struct request *next)
@@ -2550,6 +2555,7 @@ cfq_merged_requests(struct request_queue *q, struct request *rq,
 	/*
 	 * reposition in fifo if next is older than rq
 	 */
+	 /*a1.同一cfq_queue且next request时间较早,将next queuelist的request移到rq上*/
 	if (!list_empty(&rq->queuelist) && !list_empty(&next->queuelist) &&
 	    next->fifo_time < rq->fifo_time &&
 	    cfqq == RQ_CFQQ(next)) {
@@ -2557,8 +2563,10 @@ cfq_merged_requests(struct request_queue *q, struct request *rq,
 		rq->fifo_time = next->fifo_time;
 	}
 
+	/*a2.更新next_rq若next_rq是合并的next*/
 	if (cfqq->next_rq == next)
 		cfqq->next_rq = rq;
+	/*a3.移除next request*/
 	cfq_remove_request(next);
 	cfqg_stats_update_io_merged(RQ_CFQG(rq), next->cmd_flags);
 
@@ -2568,6 +2576,7 @@ cfq_merged_requests(struct request_queue *q, struct request *rq,
 	 * from the service tree. If it's the active_queue,
 	 * cfq_dispatch_requests() will choose to expire it or do idle
 	 */
+	 /*a4.从service tree中删除 rr是什么？*/
 	if (cfq_cfqq_on_rr(cfqq) && RB_EMPTY_ROOT(&cfqq->sort_list) &&
 	    cfqq != cfqd->active_queue)
 		cfq_del_cfqq_rr(cfqd, cfqq);
