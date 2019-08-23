@@ -1204,3 +1204,44 @@ struct request *elv_rb_latter_request(struct request_queue *q,
 	return NULL;
 }
 EXPORT_SYMBOL(elv_rb_latter_request);
+
+/*
+****elevator主要功能****
+1.向IO通用层提供接口
+{
+	1).register/unregister io sched 接口
+	   elv_register
+	   elv_unregister
+	2).request 加入到io sched 接口
+	blk_queue_bio
+	--->
+	    elv_merge
+			-->e->type->ops.mq.request_merge/e->type->ops.sq.elevator_merge_fn
+		bio_attempt_back/front_merge
+		elv_bio_merged
+			elv_bio_merge_ok
+				--->
+					elv_iosched_allow_bio_merge
+						-->e->type->ops.mq.allow_merge/e->type->ops.sq.elevator_allow_bio_merge_fn
+			e->type->ops.sq.elevator_bio_merged_fn
+		attempt_back/front_merge
+			-->
+			e->type->ops.mq.next/former_request/e->type->ops.sq.elevator_latter/former_req_fn
+			elv_merge_requests
+			    -->e->type->ops.mq.requests_merged/e->type->ops.sq.elevator_merge_req_fn
+		elv_merged_request
+		-->e->type->ops.mq.request_merged/e->type->ops.sq.elevator_merged_fn
+	3).从io sched中取出request 接口
+		blk_peek_request
+		--->
+		   __elv_next_request
+			   -->q->elevator->type->ops.sq.elevator_dispatch_fn
+		   elv_activate_rq
+			   -->e->type->ops.sq.elevator_activate_req_fn
+		   q->prep_rq_fn(q, rq);
+}
+2.向具休io sched提供通用的接口
+{
+	1).提供通用管理request的结构操作(红黑树)
+}
+ */
