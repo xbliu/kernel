@@ -2513,21 +2513,7 @@ static enum elv_merge cfq_merge(struct request_queue *q, struct request **req,
 		     struct bio *bio)
 {
 	struct cfq_data *cfqd = q->elevator->elevator_data;
-	struct request *__rq;
-
-	__rq = cfq_find_rq_fmerge(cfqd, bio);
-	if (__rq && elv_bio_merge_ok(__rq, bio)) {
-		*req = __rq;
-		return ELEVATOR_FRONT_MERGE;
-	}
-
-	return ELEVATOR_NO_MERGE;
-}
-
-static void cfq_merged_request(struct request_queue *q, struct request *req,
-			       enum elv_merge type)
-{
-	if (type == ELEVATOR_FRONT_MERGE) {
+	struct request *__rq;u
 		struct cfq_queue *cfqq = RQ_CFQQ(req);
 
 		cfq_reposition_rq_rb(cfqq, req);
@@ -2540,6 +2526,11 @@ static void cfq_bio_merged(struct request_queue *q, struct request *req,
 	cfqg_stats_update_io_merged(RQ_CFQG(req), bio->bi_opf);
 }
 
+/*
+***iosched如何合并request***
+*1)如何保证next fifo_time早于rq？
+*2)rr是什么？
+*/
 static void
 cfq_merged_requests(struct request_queue *q, struct request *rq,
 		    struct request *next)
@@ -2550,15 +2541,18 @@ cfq_merged_requests(struct request_queue *q, struct request *rq,
 	/*
 	 * reposition in fifo if next is older than rq
 	 */
+	/*a1.同一cfq_queue且next request时间较早,将next queuelist的request移到rq上*/
 	if (!list_empty(&rq->queuelist) && !list_empty(&next->queuelist) &&
 	    next->fifo_time < rq->fifo_time &&
 	    cfqq == RQ_CFQQ(next)) {
 		list_move(&rq->queuelist, &next->queuelist);
 		rq->fifo_time = next->fifo_time;
 	}
-
+	
+	/*a2.更新next_rq若next_rq是合并的next*/
 	if (cfqq->next_rq == next)
 		cfqq->next_rq = rq;
+	/*a3.移除next request*/
 	cfq_remove_request(next);
 	cfqg_stats_update_io_merged(RQ_CFQG(rq), next->cmd_flags);
 
@@ -2568,6 +2562,7 @@ cfq_merged_requests(struct request_queue *q, struct request *rq,
 	 * from the service tree. If it's the active_queue,
 	 * cfq_dispatch_requests() will choose to expire it or do idle
 	 */
+	/*a4.从service tree中删除 rr是什么？*/
 	if (cfq_cfqq_on_rr(cfqq) && RB_EMPTY_ROOT(&cfqq->sort_list) &&
 	    cfqq != cfqd->active_queue)
 		cfq_del_cfqq_rr(cfqd, cfqq);
@@ -3523,6 +3518,12 @@ static bool cfq_dispatch_request(struct cfq_data *cfqd, struct cfq_queue *cfqq)
  * Find the cfqq that we need to service and move a request from that to the
  * dispatch list
  */
+/*
+***如何从iosched取出request***
+1)如何选择合适的cfq_queue
+2)如何分发cfq_queue中的request
+3)slice_dispatch用来作什么
+*/
 static int cfq_dispatch_requests(struct request_queue *q, int force)
 {
 	struct cfq_data *cfqd = q->elevator->elevator_data;
@@ -3534,23 +3535,28 @@ static int cfq_dispatch_requests(struct request_queue *q, int force)
 	if (unlikely(force))
 		return cfq_forced_dispatch(cfqd);
 
-	cfqq = cfq_select_queue(cfqd);
+	cfqq = cfq_select_queue(cfqd); /*a1.选择一个cfq_queue*/
 	if (!cfqq)
 		return 0;
 
 	/*
 	 * Dispatch a request from this cfqq, if it is allowed
 	 */
-	if (!cfq_dispatch_request(cfqd, cfqq))
+	if (!cfq_dispatch_request(cfqd, cfqq)) /*a2.分发cfq_queue的请求*/
 		return 0;
 
 	cfqq->slice_dispatch++;
-	cfq_clear_cfqq_must_dispatch(cfqq);
+	cfq_clear_cfqq_must_dispatch(cfqq); /*a3.清除dispatch标记,增加slice_dispatch计数*/
 
 	/*
 	 * expire an async queue immediately if it has used up its slice. idle
 	 * queue always expire after 1 dispatch round.
 	 */
+	/*a4.cfqd->busy_queues > 1 且有以下情况之一
+	1)async queue且分配的时间片已用完
+	2)idle queue
+	切换新的cfq_queue
+	*/
 	if (cfqd->busy_queues > 1 && ((!cfq_cfqq_sync(cfqq) &&
 	    cfqq->slice_dispatch >= cfq_prio_to_maxrq(cfqd, cfqq)) ||
 	    cfq_class_idle(cfqq))) {
