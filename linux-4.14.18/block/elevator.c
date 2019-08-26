@@ -1213,24 +1213,52 @@ EXPORT_SYMBOL(elv_rb_latter_request);
 	   elv_register
 	   elv_unregister
 	2).request 加入到io sched 接口
-	blk_queue_bio
-	--->
-	    elv_merge
-			-->e->type->ops.mq.request_merge/e->type->ops.sq.elevator_merge_fn
-		bio_attempt_back/front_merge
-		elv_bio_merged
-			elv_bio_merge_ok
+	分为以下两步:
+	a.bio并入到io sched
+	{
+		i:通用判断bio是否可以加入到io sched
+		ii:专有的判断bio是否可以加入到io sched
+		elv_merge
+			--->
+				elv_bio_merge_ok
+				e->type->ops.mq.request_merge/e->type->ops.sq.elevator_merge_fn //bio是否可以并入request
+		elv_bio_merge_ok
 				--->
 					elv_iosched_allow_bio_merge
 						-->e->type->ops.mq.allow_merge/e->type->ops.sq.elevator_allow_bio_merge_fn
+	}
+	b.request并入到io sched
+	i:蓄流时加入
+	blk_queue_bio
+	--->
+		bio_attempt_back/front_merge
+		
+		elv_bio_merged
+		--->
 			e->type->ops.sq.elevator_bio_merged_fn
 		attempt_back/front_merge
-			-->
-			e->type->ops.mq.next/former_request/e->type->ops.sq.elevator_latter/former_req_fn
-			elv_merge_requests
-			    -->e->type->ops.mq.requests_merged/e->type->ops.sq.elevator_merge_req_fn
+		--->
+			elv_latter/former_request
+			--->
+				e->type->ops.mq.next/former_request/e->type->ops.sq.elevator_latter/former_req_fn
+			attempt_merge
+			--->
+				elv_merge_requests
+				--->
+					e->type->ops.mq.requests_merged/e->type->ops.sq.elevator_merge_req_fn
 		elv_merged_request
-		-->e->type->ops.mq.request_merged/e->type->ops.sq.elevator_merged_fn
+		--->
+			e->type->ops.mq.request_merged/e->type->ops.sq.elevator_merged_fn
+	ii:泄流时加入
+	__elv_add_request
+	--->
+		elv_attempt_insert_merge<case ELEVATOR_INSERT_SORT_MERGE>
+		--->
+			blk_attempt_req_merge
+			--->
+				e->type->ops.sq.elevator_allow_rq_merge_fn
+				attempt_merge
+	
 	3).从io sched中取出request 接口
 		blk_peek_request
 		--->
