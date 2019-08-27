@@ -3675,3 +3675,19 @@ int __init blk_dev_init(void)
 
 	return 0;
 }
+
+/*
+***各结构之间的关系与作用***
+struct io_context
+struct request_queue
+
+struct io_cq
+{
+* An io_cq (icq) is association between an io_context (ioc) and a
+* request_queue (q).  This is used by elevators which need to track
+* information per ioc - q pair.
+}
+
+
+
+*/
