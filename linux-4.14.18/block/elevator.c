@@ -1212,6 +1212,35 @@ EXPORT_SYMBOL(elv_rb_latter_request);
 	1).register/unregister io sched 接口
 	   elv_register
 	   elv_unregister
+	   
+	   request iocontext相关
+	   i: alloc request <什么时候创建request>
+	   __get_request/blk_mq_sched_assign_ioc
+	   --->
+		   ioc_create_icq
+		   --->
+			   et->ops.mq.init_icq/et->ops.sq.elevator_init_icq_fn
+	   ii:destroy icq <__blk_release_queue 什么时候销毁request>
+	   ioc_destroy_icq/put_io_context_active
+	   --->
+		   ioc_exit_icq
+			   --->
+			   et->ops.mq.exit_icq/et->ops.sq.elevator_exit_icq_fn
+	  
+	  request与io sched 关联数据   
+	   __get_request
+	   --->
+		   elv_set_request(q, rq, bio, gfp_mask)  //private data associated with this request
+		   --->
+			   e->type->ops.sq.elevator_set_req_fn
+			   
+	   __blk_put_request
+	   --->
+		   blk_free_request
+		   --->
+			   elv_put_request
+			   --->
+				   e->type->ops.sq.elevator_put_req_fn
 	2).request 加入到io sched 接口
 	分为以下两步:
 	a.bio并入到io sched
@@ -1258,15 +1287,40 @@ EXPORT_SYMBOL(elv_rb_latter_request);
 			--->
 				e->type->ops.sq.elevator_allow_rq_merge_fn
 				attempt_merge
+		q->elevator->type->ops.sq.elevator_add_req_fn <case ELEVATOR_INSERT_SORT>
 	
 	3).从io sched中取出request 接口
 		blk_peek_request
 		--->
 		   __elv_next_request
-			   -->q->elevator->type->ops.sq.elevator_dispatch_fn
-		   elv_activate_rq
-			   -->e->type->ops.sq.elevator_activate_req_fn
+		   --->
+			   q->elevator->type->ops.sq.elevator_dispatch_fn
+		   elv_activate_rq //the first time the device driver sees this request (possibly after requeueing).  Notify IO scheduler
+		   --->
+			   e->type->ops.sq.elevator_activate_req_fn
 		   q->prep_rq_fn(q, rq);
+		
+		队列激活相关<当用户切换io shed策略时>
+		blk_peek_request
+		---> 
+			elv_activate_rq //the first time the device driver sees this request (possibly after requeueing).  Notify IO scheduler
+		   --->
+			   e->type->ops.sq.elevator_activate_req_fn
+		blk_requeue_request //put a request back on queue
+		--->
+			elv_requeue_request
+			--->
+				elv_deactivate_rq
+				--->
+					e->type->ops.sq.elevator_deactivate_req_fn
+		
+		释放队列<有创建就得有释放>
+		flush_end_io/flush_data_end_io/__blk_put_request
+		--->
+			elv_completed_request //request is released from the driver
+			--->
+				e->type->ops.sq.elevator_completed_req_fn
+		
 }
 2.向具休io sched提供通用的接口
 {
