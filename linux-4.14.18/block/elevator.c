@@ -1210,37 +1210,43 @@ EXPORT_SYMBOL(elv_rb_latter_request);
 1.向IO通用层提供接口
 {
 	1).register/unregister io sched 接口
-	   elv_register
-	   elv_unregister
-	   
-	   request iocontext相关
-	   i: alloc request <什么时候创建request>
-	   __get_request/blk_mq_sched_assign_ioc
-	   --->
-		   ioc_create_icq
-		   --->
-			   et->ops.mq.init_icq/et->ops.sq.elevator_init_icq_fn
-	   ii:destroy icq <__blk_release_queue 什么时候销毁request>
-	   ioc_destroy_icq/put_io_context_active
-	   --->
-		   ioc_exit_icq
-			   --->
-			   et->ops.mq.exit_icq/et->ops.sq.elevator_exit_icq_fn
-	  
-	  request与io sched 关联数据   
-	   __get_request
-	   --->
-		   elv_set_request(q, rq, bio, gfp_mask)  //private data associated with this request
-		   --->
-			   e->type->ops.sq.elevator_set_req_fn
-			   
-	   __blk_put_request
-	   --->
-		   blk_free_request
-		   --->
-			   elv_put_request
-			   --->
-				   e->type->ops.sq.elevator_put_req_fn
+		elv_register
+		elv_unregister
+	2).io sched与request关联私有数据创建与销毁
+		a.request iocontext相关
+			i: alloc request <什么时候创建request>
+			__get_request/blk_mq_sched_assign_ioc
+				--->
+				ioc_create_icq
+				--->
+					et->ops.mq.init_icq/et->ops.sq.elevator_init_icq_fn
+			ii:destroy icq <__blk_release_queue 什么时候销毁request>
+			ioc_destroy_icq/put_io_context_active
+			--->
+				ioc_exit_icq
+				--->
+					et->ops.mq.exit_icq/et->ops.sq.elevator_exit_icq_fn
+		b.request与io sched 关联数据 
+		i: 私有数据创建
+		__get_request
+		--->
+			elv_set_request(q, rq, bio, gfp_mask)  //private data associated with this request
+			--->
+				e->type->ops.sq.elevator_set_req_fn
+		ii:私有数据销毁	   
+		__blk_put_request
+		--->
+			blk_free_request
+			--->
+				elv_put_request
+				--->
+					e->type->ops.sq.elevator_put_req_fn
+		c.释放队列<有创建就得有释放>
+		flush_end_io/flush_data_end_io/__blk_put_request
+		--->
+			elv_completed_request //request is released from the driver
+			--->
+				e->type->ops.sq.elevator_completed_req_fn
 	2).request 加入到io sched 接口
 	分为以下两步:
 	a.bio并入到io sched
@@ -1248,46 +1254,48 @@ EXPORT_SYMBOL(elv_rb_latter_request);
 		i:通用判断bio是否可以加入到io sched
 		ii:专有的判断bio是否可以加入到io sched
 		elv_merge
-			--->
-				elv_bio_merge_ok
-				e->type->ops.mq.request_merge/e->type->ops.sq.elevator_merge_fn //bio是否可以并入request
+		--->
+			elv_bio_merge_ok
+			e->type->ops.mq.request_merge/e->type->ops.sq.elevator_merge_fn //bio是否可以并入request
+
 		elv_bio_merge_ok
-				--->
-					elv_iosched_allow_bio_merge
-						-->e->type->ops.mq.allow_merge/e->type->ops.sq.elevator_allow_bio_merge_fn
+		--->
+			elv_iosched_allow_bio_merge
+			--->
+				e->type->ops.mq.allow_merge/e->type->ops.sq.elevator_allow_bio_merge_fn
 	}
 	b.request并入到io sched
-	i:蓄流时加入
-	blk_queue_bio
-	--->
-		bio_attempt_back/front_merge
-		
-		elv_bio_merged
+		i:蓄流时加入
+		blk_queue_bio
 		--->
-			e->type->ops.sq.elevator_bio_merged_fn
-		attempt_back/front_merge
-		--->
-			elv_latter/former_request
+			bio_attempt_back/front_merge
+			
+			elv_bio_merged
 			--->
-				e->type->ops.mq.next/former_request/e->type->ops.sq.elevator_latter/former_req_fn
-			attempt_merge
+				e->type->ops.sq.elevator_bio_merged_fn
+			attempt_back/front_merge
 			--->
-				elv_merge_requests
+				elv_latter/former_request
 				--->
-					e->type->ops.mq.requests_merged/e->type->ops.sq.elevator_merge_req_fn
-		elv_merged_request
-		--->
-			e->type->ops.mq.request_merged/e->type->ops.sq.elevator_merged_fn
-	ii:泄流时加入
-	__elv_add_request
-	--->
-		elv_attempt_insert_merge<case ELEVATOR_INSERT_SORT_MERGE>
-		--->
-			blk_attempt_req_merge
-			--->
-				e->type->ops.sq.elevator_allow_rq_merge_fn
+					e->type->ops.mq.next/former_request/e->type->ops.sq.elevator_latter/former_req_fn
 				attempt_merge
-		q->elevator->type->ops.sq.elevator_add_req_fn <case ELEVATOR_INSERT_SORT>
+				--->
+					elv_merge_requests
+					--->
+						e->type->ops.mq.requests_merged/e->type->ops.sq.elevator_merge_req_fn
+			elv_merged_request
+			--->
+				e->type->ops.mq.request_merged/e->type->ops.sq.elevator_merged_fn
+		ii:泄流时加入
+		__elv_add_request
+		--->
+			elv_attempt_insert_merge<case ELEVATOR_INSERT_SORT_MERGE>
+			--->
+				blk_attempt_req_merge
+				--->
+					e->type->ops.sq.elevator_allow_rq_merge_fn
+					attempt_merge
+			q->elevator->type->ops.sq.elevator_add_req_fn <case ELEVATOR_INSERT_SORT>
 	
 	3).从io sched中取出request 接口
 		blk_peek_request
@@ -1313,14 +1321,6 @@ EXPORT_SYMBOL(elv_rb_latter_request);
 				elv_deactivate_rq
 				--->
 					e->type->ops.sq.elevator_deactivate_req_fn
-		
-		释放队列<有创建就得有释放>
-		flush_end_io/flush_data_end_io/__blk_put_request
-		--->
-			elv_completed_request //request is released from the driver
-			--->
-				e->type->ops.sq.elevator_completed_req_fn
-		
 }
 2.向具休io sched提供通用的接口
 {
