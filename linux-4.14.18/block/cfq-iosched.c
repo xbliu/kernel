@@ -4944,3 +4944,12 @@ MODULE_DESCRIPTION("Completely Fair Queueing IO scheduler");
 *** 4)init 与 exit 操作
 */
 
+/*
+** iosched实现几大流程:
+** 1)register/unregister iosched 
+** 2)init 与exit (初始化) 
+** 2)将iosched私有数据与request关联
+** 3)request如何加入到此 iosched
+** 4)如何从iosched取出request 
+** 5)iosched如何合并request  
+*/
