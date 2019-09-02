@@ -3686,7 +3686,14 @@ struct io_cq
 * An io_cq (icq) is association between an io_context (ioc) and a
 * request_queue (q).  This is used by elevators which need to track
 * information per ioc - q pair.
-}
+} 
+ 
+        |---> io_context
+        |
+io_cq---|
+        |
+        |--->request_queue
+ 
 
 */
 

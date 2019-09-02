@@ -4948,10 +4948,9 @@ MODULE_DESCRIPTION("Completely Fair Queueing IO scheduler");
 ***io sched流程
 ** 1) register/unregister io sched
 ** 2) init /exit io sched
-** 3) io sched如何与request关联
+** 3) io sched私有数据如何与request关联
 ** 4) io sched如何加入request
 ** 5) io sched如何取出request
 ** 6) io sched如何合并request
 **
 */
-
