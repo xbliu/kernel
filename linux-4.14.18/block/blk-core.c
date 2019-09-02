@@ -3688,6 +3688,5 @@ struct io_cq
 * information per ioc - q pair.
 }
 
-
-
 */
+
