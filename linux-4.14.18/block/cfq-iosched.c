@@ -1302,7 +1302,9 @@ cfq_group_service_tree_add(struct cfq_rb_root *st, struct cfq_group *cfqg)
 	 * because cfqg might already have been activated and is
 	 * contributing its current weight to the parent's child_weight.
 	 */
+	 /*a1.更新叶子权重*/
 	cfq_update_group_leaf_weight(cfqg);
+ 	/*a2.加入到 service tree中*/
 	__cfq_group_service_tree_add(st, cfqg);
 
 	/*
@@ -1314,6 +1316,9 @@ cfq_group_service_tree_add(struct cfq_rb_root *st, struct cfq_group *cfqg)
 	 * Start with the proportion tasks in this cfqg has against active
 	 * children cfqgs - its leaf_weight against children_weight.
 	 */
+	/*
+	a3.计算与更新vfraction <任务拥有虚拟磁盘时间的分数>
+	*/
 	propagate = !pos->nr_active++;
 	pos->children_weight += pos->leaf_weight;
 	vfr = vfr * pos->leaf_weight / pos->children_weight;
@@ -1352,6 +1357,7 @@ cfq_group_notify_queue_add(struct cfq_data *cfqd, struct cfq_group *cfqg)
 	struct cfq_group *__cfqg;
 	struct rb_node *n;
 
+	/*a1.更新cfq_queue计数,若已加入到grp_service_tree则返回*/
 	cfqg->nr_cfqq++;
 	if (!RB_EMPTY_NODE(&cfqg->rb_node))
 		return;
@@ -1361,6 +1367,7 @@ cfq_group_notify_queue_add(struct cfq_data *cfqd, struct cfq_group *cfqg)
 	 * so that groups get lesser vtime based on their weights, so that
 	 * if group does not loose all if it was not continuously backlogged.
 	 */
+	/*a2.计算cfq_group的vdisktime*/ 
 	n = st->rb_rightmost;
 	if (n) {
 		__cfqg = rb_entry_cfqg(n);
@@ -1368,6 +1375,7 @@ cfq_group_notify_queue_add(struct cfq_data *cfqd, struct cfq_group *cfqg)
 			cfq_get_cfqg_vdisktime_delay(cfqd);
 	} else
 		cfqg->vdisktime = st->min_vdisktime;
+	/*a3.加入到grp_service_tree中*/
 	cfq_group_service_tree_add(st, cfqg);
 }
 
@@ -2207,7 +2215,17 @@ static void cfq_service_tree_add(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 	int new_cfqq = 1;
 	u64 now = ktime_get_ns();
 
+	/*
+	a1.获取service_trees
+	cfq_queue分为三大类
+	IDLE,RT,BE
+	其中RT,BE又分为三大子类:
+	ASYNC,SYNC,SYNC_NOIDLE<这个表示什么？有什么作用>
+	*/
 	st = st_for(cfqq->cfqg, cfqq_class(cfqq), cfqq_type(cfqq));
+	/*
+	a2.计算rb_key
+	*/
 	if (cfq_class_idle(cfqq)) {
 		rb_key = CFQ_IDLE_DELAY;
 		parent = st->rb_rightmost;
@@ -2232,6 +2250,9 @@ static void cfq_service_tree_add(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 		rb_key += __cfqq ? __cfqq->rb_key : now;
 	}
 
+	/*
+	a3.若新的与旧的service_tree或rb_key不一样则从旧的service_tree中移除
+	*/
 	if (!RB_EMPTY_NODE(&cfqq->rb_node)) {
 		new_cfqq = 0;
 		/*
@@ -2244,6 +2265,7 @@ static void cfq_service_tree_add(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 		cfqq->service_tree = NULL;
 	}
 
+	/*a4.查找合适的插入位置<在红黑树中查找合适的插入结点>*/
 	parent = NULL;
 	cfqq->service_tree = st;
 	p = &st->rb.rb_root.rb_node;
@@ -2262,12 +2284,14 @@ static void cfq_service_tree_add(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 		}
 	}
 
+	/*a5.插入到红黑树中*/
 	cfqq->rb_key = rb_key;
 	rb_link_node(&cfqq->rb_node, parent, p);
 	rb_insert_color_cached(&cfqq->rb_node, &st->rb, leftmost);
 	st->count++;
 	if (add_front || !new_cfqq)
 		return;
+	/*a6.若cfq_group未加入到grp_service_tree中,则添加,否则不做任何操作*/
 	cfq_group_notify_queue_add(cfqd, cfqq->cfqg);
 }
 
@@ -2354,11 +2378,15 @@ static void cfq_add_cfqq_rr(struct cfq_data *cfqd, struct cfq_queue *cfqq)
 {
 	cfq_log_cfqq(cfqd, cfqq, "add_to_rr");
 	BUG_ON(cfq_cfqq_on_rr(cfqq));
+	/*a1.cfq_queue on_rr位置1,表示处于忙等队列中*/
 	cfq_mark_cfqq_on_rr(cfqq);
+	/*
+	a2.忙等队列、忙等同步队列计数加1
+	*/
 	cfqd->busy_queues++;
 	if (cfq_cfqq_sync(cfqq))
 		cfqd->busy_sync_queues++;
-
+	/*a3.因新增cfq_queue到忙等队列中故需重新调整忙等队列的每个cfq_queue顺序*/
 	cfq_resort_rr_list(cfqd, cfqq);
 }
 
@@ -2424,18 +2452,30 @@ static void cfq_add_rq_rb(struct request *rq)
 
 	elv_rb_add(&cfqq->sort_list, rq);
 
+	/*
+	rr:on round-robin busy list,  busy list代表什么? 
+	a1.若没有在循环忙队列中,则加入 
+	*/
 	if (!cfq_cfqq_on_rr(cfqq))
 		cfq_add_cfqq_rr(cfqd, cfqq);
 
 	/*
 	 * check if this request is a better next-serve candidate
 	 */
+	/*
+	a2.比较cfq_queue的next_rq(下一个服务的request)与当前加入的request谁更合适作为下一次的候选者
+	<cfq为完全公平调度,所以next_rq与当前req有同样的调度机会,故需要进行比较>
+	*/
 	prev = cfqq->next_rq;
 	cfqq->next_rq = cfq_choose_req(cfqd, cfqq->next_rq, rq, cfqd->last_position);
 
 	/*
 	 * adjust priority tree position, if ->next_rq changes
 	 */
+	/*
+	a3.重新调整cfq_queue在优先级树中的位置
+	<next_rq更改意味着当前cfq_queue的调度机会比之前增大,所以需要重新调整在优先级树中的位置>
+	*/ 
 	if (prev != cfqq->next_rq)
 		cfq_prio_tree_add(cfqd, cfqq);
 
@@ -4954,3 +4994,4 @@ MODULE_DESCRIPTION("Completely Fair Queueing IO scheduler");
 ** 6) io sched如何合并request
 **
 */
+
