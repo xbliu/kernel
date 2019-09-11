@@ -3023,11 +3023,12 @@ static void cfq_dispatch_insert(struct request_queue *q, struct request *rq)
 	struct cfq_queue *cfqq = RQ_CFQQ(rq);
 
 	cfq_log_cfqq(cfqd, cfqq, "dispatch_insert");
-
+	/*a1.选择下一个合适的request*/
 	cfqq->next_rq = cfq_find_next_rq(cfqd, cfqq, rq);
 	cfq_remove_request(rq);
 	cfqq->dispatched++;
 	(RQ_CFQG(rq))->dispatched++;
+	/*a2.将request有序的插入到 request queue*/
 	elv_dispatch_sort(q, rq);
 
 	cfqd->rq_in_flight[cfq_cfqq_sync(cfqq)]++;
@@ -3262,27 +3263,42 @@ static void cfq_choose_cfqg(struct cfq_data *cfqd)
  * Select a queue for service. If we have a current active queue,
  * check whether to continue servicing it, or retrieve and set a new one.
  */
+ /*
+ 选择cfq_queue顺序如下:
+ 1)从prio_trees中选择离cur cfq_queue近的cfq_queue,以便有机会合并处理
+ 2)从grp_service_tree选择cfq_group再从其中选择cfq_queue
+ */
 static struct cfq_queue *cfq_select_queue(struct cfq_data *cfqd)
 {
 	struct cfq_queue *cfqq, *new_cfqq = NULL;
 	u64 now = ktime_get_ns();
-
+	/*a1.当前active_queue是否存在,不存在则选择新的cfq_queue*/
 	cfqq = cfqd->active_queue;
 	if (!cfqq)
 		goto new_queue;
-
+	/*a2.cfq_data下没有cfq_queue*/
 	if (!cfqd->rq_queued)
 		return NULL;
 
 	/*
 	 * We were waiting for group to get backlogged. Expire the queue
 	 */
+	/*
+	a3.当前active cfq_queue积压太久,使队列过期
+	(不是当前有效cfq_queue,为什么会等待过久呢？或者说在什么情况下wait_busy?)
+	*/ 
 	if (cfq_cfqq_wait_busy(cfqq) && !RB_EMPTY_ROOT(&cfqq->sort_list))
 		goto expire;
 
 	/*
 	 * The active queue has run out of time, expire it and select new.
 	 */
+	/*
+	b1.当前cfq_queue的时间片已用完且未标记must_dispatch 继续保持此cfq_queue
+	1)cfq_queue所属的cfq_group只有它一个且其下无任何request且dispatched且应该idle
+	<最后一个请求结束时时间尚未过期>
+	2)cfq_group已开启idle,等待分发的请求完成  ？？？？check_group_idle
+	*/ 
 	if (cfq_slice_used(cfqq) && !cfq_cfqq_must_dispatch(cfqq)) {
 		/*
 		 * If slice had not expired at the completion of last request
@@ -3305,6 +3321,7 @@ static struct cfq_queue *cfq_select_queue(struct cfq_data *cfqd)
 	 * The active queue has requests and isn't expired, allow it to
 	 * dispatch.
 	 */
+	 /*b2.cfq_queue尚未过期且有request*/
 	if (!RB_EMPTY_ROOT(&cfqq->sort_list))
 		goto keep_queue;
 
@@ -3314,6 +3331,7 @@ static struct cfq_queue *cfq_select_queue(struct cfq_data *cfqd)
 	 * cooperators and put the close queue at the front of the service
 	 * tree.  If possible, merge the expiring queue with the new cfqq.
 	 */
+	/*a4.尝试从prio_trees中选择离当前cfq_queue近的新 cfq_queue,以便有机会可以与当前cfq_queue合并处理*/ 
 	new_cfqq = cfq_close_cooperator(cfqd, cfqq);
 	if (new_cfqq) {
 		if (!cfqq->new_cfqq)
@@ -3366,6 +3384,7 @@ new_queue:
 	 * Current queue expired. Check if we have to switch to a new
 	 * service tree
 	 */
+	/*a5.没有new cfq_queue,从grp_service_tree中选择下一个cfq_queue*/ 
 	if (!new_cfqq)
 		cfq_choose_cfqg(cfqd);
 
@@ -3523,17 +3542,18 @@ static bool cfq_dispatch_request(struct cfq_data *cfqd, struct cfq_queue *cfqq)
 	struct request *rq;
 
 	BUG_ON(RB_EMPTY_ROOT(&cfqq->sort_list));
-
+	/*a1.检测cfq_queue fifo队列是否有最后期限未处理的request*/
 	rq = cfq_check_fifo(cfqq);
 	if (rq)
 		cfq_mark_cfqq_must_dispatch(cfqq);
-
+	/*a2.cfq_queue是否应dispatch*/
 	if (!cfq_may_dispatch(cfqd, cfqq))
 		return false;
 
 	/*
 	 * follow expired path, else get first next available
 	 */
+	/*fifo上有request应处理的优先,否则next_rq*/ 
 	if (!rq)
 		rq = cfqq->next_rq;
 	else
@@ -3542,8 +3562,13 @@ static bool cfq_dispatch_request(struct cfq_data *cfqd, struct cfq_queue *cfqq)
 	/*
 	 * insert request into driver dispatch list
 	 */
+	/*a3.将requset分发到 request queue */ 
 	cfq_dispatch_insert(cfqd->queue, rq);
 
+	/*
+	a4.active_cic赋值 
+	<active_cic是什么？>
+	*/
 	if (!cfqd->active_cic) {
 		struct cfq_io_cq *cic = RQ_CIC(rq);
 
@@ -3568,31 +3593,31 @@ static int cfq_dispatch_requests(struct request_queue *q, int force)
 {
 	struct cfq_data *cfqd = q->elevator->elevator_data;
 	struct cfq_queue *cfqq;
-
+	/*a1.没有cfq_queue,直接返回*/
 	if (!cfqd->busy_queues)
 		return 0;
 
 	if (unlikely(force))
 		return cfq_forced_dispatch(cfqd);
 
-	cfqq = cfq_select_queue(cfqd); /*a1.选择一个cfq_queue*/
+	cfqq = cfq_select_queue(cfqd); /*a2.选择一个cfq_queue*/
 	if (!cfqq)
 		return 0;
 
 	/*
 	 * Dispatch a request from this cfqq, if it is allowed
 	 */
-	if (!cfq_dispatch_request(cfqd, cfqq)) /*a2.分发cfq_queue的请求*/
+	if (!cfq_dispatch_request(cfqd, cfqq)) /*a3.分发cfq_queue的请求*/
 		return 0;
 
 	cfqq->slice_dispatch++;
-	cfq_clear_cfqq_must_dispatch(cfqq); /*a3.清除dispatch标记,增加slice_dispatch计数*/
+	cfq_clear_cfqq_must_dispatch(cfqq); /*a4.清除dispatch标记,增加slice_dispatch计数*/
 
 	/*
 	 * expire an async queue immediately if it has used up its slice. idle
 	 * queue always expire after 1 dispatch round.
 	 */
-	/*a4.cfqd->busy_queues > 1 且有以下情况之一
+	/*a5.cfqd->busy_queues > 1 且有以下情况之一
 	1)async queue且分配的时间片已用完
 	2)idle queue
 	切换新的cfq_queue
