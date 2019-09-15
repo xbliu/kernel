@@ -2553,7 +2553,21 @@ static enum elv_merge cfq_merge(struct request_queue *q, struct request **req,
 		     struct bio *bio)
 {
 	struct cfq_data *cfqd = q->elevator->elevator_data;
-	struct request *__rq;u
+	struct request *__rq;
+
+	__rq = cfq_find_rq_fmerge(cfqd, bio);
+	if (__rq && elv_bio_merge_ok(__rq, bio)) {
+		*req = __rq;
+		return ELEVATOR_FRONT_MERGE;
+	}
+
+	return ELEVATOR_NO_MERGE;
+}
+
+static void cfq_merged_request(struct request_queue *q, struct request *req,
+				   enum elv_merge type)
+{
+	if (type == ELEVATOR_FRONT_MERGE) {
 		struct cfq_queue *cfqq = RQ_CFQQ(req);
 
 		cfq_reposition_rq_rb(cfqq, req);
