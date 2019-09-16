@@ -3,11 +3,13 @@ CFQ (Complete Fairness Queueing)
 
 The main aim of CFQ scheduler is to provide a fair allocation of the disk
 I/O bandwidth for all the processes which requests an I/O operation.
+cfq 调度的主要目的是为所有请求IO操作的进程提供磁盘IO带宽的公平分配.
 
 CFQ maintains the per process queue for the processes which request I/O
 operation(synchronous requests). In case of asynchronous requests, all the
 requests from all the processes are batched together according to their
 process's I/O priority.
+cfq维护一个请求IO(同步请求)的进程一个处理队列.对于异步请求,则通过进程的优先级一起批处理.
 
 CFQ ioscheduler tunables
 ========================
@@ -17,17 +19,23 @@ slice_idle
 This specifies how long CFQ should idle for next request on certain cfq queues
 (for sequential workloads) and service trees (for random workloads) before
 queue is expired and CFQ selects next queue to dispatch from.
+指定在队列到期且cfq选择下一个队列进行调度之前,为下一个在某些cfq队列(对于顺序工作负载)与
+service tree(对于随机工作负载)的请求处理空闲多长时间.
 
 By default slice_idle is a non-zero value. That means by default we idle on
 queues/service trees. This can be very helpful on highly seeky media like
 single spindle SATA/SAS disks where we can cut down on overall number of
 seeks and see improved throughput.
+默认的slice_idle为非零值.这意味着默认情况下在queue/service tree上处于空闲状态.这对于
+频繁寻道的媒介(如单主轴 SATA/SAS 磁盘)非常有用,可以减少寻道的总数并提高吞吐量.
 
 Setting slice_idle to 0 will remove all the idling on queues/service tree
 level and one should see an overall improved throughput on faster storage
 devices like multiple SATA/SAS disks in hardware RAID configuration. The down
 side is that isolation provided from WRITES also goes down and notion of
 IO priority becomes weaker.
+slice_idle设为0将移除在queue/service tree级别的所有空闲且在更快的设备上看到总体吞吐量的提高
+如硬件RAID配置中的多个SATA/SAS 磁盘.另一方面写隔离也将下降,IO优先级的概念也会变弱.
 
 So depending on storage and workload, it might be useful to set slice_idle=0.
 In general I think for SATA/SAS disks and software RAID of SATA/SAS disks
