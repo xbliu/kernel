@@ -4170,17 +4170,21 @@ cfq_rq_enqueued(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 		struct request *rq)
 {
 	struct cfq_io_cq *cic = RQ_CIC(rq);
-
+    /*a1.更新rq_queued计数*/
 	cfqd->rq_queued++;
 	if (rq->cmd_flags & REQ_PRIO)
 		cfqq->prio_pending++;
-
+    /*a2.更新io_thinktime、io_seektime、idle_window*/
 	cfq_update_io_thinktime(cfqd, cfqq, cic);
 	cfq_update_io_seektime(cfqd, cfqq, rq);
 	cfq_update_idle_window(cfqd, cfqq, cic);
 
 	cfqq->last_request_pos = blk_rq_pos(rq) + blk_rq_sectors(rq);//更新扇区大小
-
+    /* 
+    a3.必要时出队,出队的情况如下: 
+     1)cfq_queue为当前有效queue且在等待数据到来,blk_rq_bytes(rq) > PAGE_SIZE || cfqd->busy_queues > 1
+     2)cfq_queue为等待queue,但允许抢占
+    */
 	if (cfqq == cfqd->active_queue) {
 		/*
 		 * Remember that we saw a request from this process, but
