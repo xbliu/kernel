@@ -2454,7 +2454,7 @@ static void cfq_add_rq_rb(struct request *rq)
 
 	/*
 	rr:on round-robin busy list,  busy list代表什么? 
-	a1.若没有在循环忙队列中,则加入 
+	a1.若没有在轮转活动队列中,则加入 
 	*/
 	if (!cfq_cfqq_on_rr(cfqq))
 		cfq_add_cfqq_rr(cfqd, cfqq);
@@ -5036,5 +5036,46 @@ MODULE_DESCRIPTION("Completely Fair Queueing IO scheduler");
 ** 5) io sched如何取出request
 ** 6) io sched如何合并request
 **
+*/
+
+/*
+**cgroup一些规则
+**1)vdisk_time 初值计算 <cfq_group_notify_queue_add>
+grp_service_tree
+{
+	rb_rightmost: 记录着cgroup中最大的vdisk_time
+	min_vdisktime:最小的vdiskttime 
+}
+若有rb_rightmost则
+cur->vdisktime = grp_service_tree->rb_rightmost->vdisktime + cfq_get_cfqg_vdisktime_delay(cfqd)
+否则:
+cur->vdisktime = grp_service_tree->min_vdisktime
+
+**2)vfr初值计算 <cfq_group_service_tree_add>
+cfq_group
+{
+	leaf_weight: 叶子结点的权重
+	children_weight:孩子结点的权重
+	weight:本身的权重
+}
+权重计算涉及new_cfq_group与其到根结点路径的parent_cfq_group
+1)unsigned int vfr = 1 << CFQ_SERVICE_SHIFT;
+2)vfr = vfr * new->leaf_weight / new->children_weight; <当前结点vfr计算>
+3)vfr = vfr * new->weight / parent->children_weight; <沿途路径父结点递归vfr计算>
+4)cfqg->vfraction = max_t(unsigned, vfr, 1)
+其中
+{
+	parent->children_weight += child->weight <父结点孩子权重等于两个子孩子权重之和>
+	new->children_weight += new->leaf_weight <新结点的孩子为叶子结点,所以孩子权重要加上叶子结点>
+}
+	A(child_weight,weight)
+	/			\
+	B(cw,w)		B1(cw,w)
+	/	\			/
+C(cw,w)	C1(cw,w)   C2(cw,w)
+		/
+	 leaf(w)
+从上图可以看出父结点到叶子结点的路径为A->B->C1->leaf(w),实际vfr的计算
+vfr = vfr * child->weight / parent->children_weight
 */
 
