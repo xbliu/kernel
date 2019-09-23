@@ -5102,9 +5102,14 @@ cfq_dispatch_request ---> cfq_select_queue ---> cfq_set_active_queue ---> __cfq_
      }
  }
 3)分片时间什么时候开始结束 
+ a. cfq_dispatch_request ---> cfq_select_queue ---> cfq_slice_expired  //下一次分发时检测
+ b. cfq_completed_request  ---> cfq_slice_expired  //request完成的时候检测
  
 4)分片时间计算规则 
 cfq_set_prio_slice ---> cfq_scaled_cfqq_slice ---> cfq_prio_to_slice ---> cfq_prio_slice
 { 
+a. base_slice = cfqd->cfq_slice[cfq_cfqq_sync(cfqq)] //获取基准值
+b. slice = base_slice + (div_u64(base_slice,CFQ_SLICE_SCALE) * (4 - prio)) //优先级转slice
+c. 延迟计算 <cfq_scaled_cfqq_slice 函数>
 } 
 */
