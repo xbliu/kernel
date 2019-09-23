@@ -5079,3 +5079,32 @@ C(cw,w)	C1(cw,w)   C2(cw,w)
 vfr = vfr * child->weight / parent->children_weight
 */
 
+
+/*
+***cfq 分片时间*** 
+1)active cfq_queue 
+cfq_dispatch_request ---> cfq_select_queue ---> cfq_set_active_queue ---> __cfq_set_active_queue
+{ 
+    slice_start = 0 //分片起始时间
+    slice_end = 0 //分片截止时间
+    slice_dispatch = 0 //分片周期内分发次数
+    cfq_mark_cfqq_slice_new(cfqq) //标记为新的分片
+} 
+2)分片时间什么时候开始计算 
+ //time when first request from queue completed and slice started.
+ 当第一次分发的第一个请求完成时分片时间开始计算
+ cfq_completed_request
+ {
+     if (cfqd->active_queue == cfqq) {
+         if (cfq_cfqq_slice_new(cfqq)) {
+    			cfq_set_prio_slice(cfqd, cfqq);
+    		}
+     }
+ }
+3)分片时间什么时候开始结束 
+ 
+4)分片时间计算规则 
+cfq_set_prio_slice ---> cfq_scaled_cfqq_slice ---> cfq_prio_to_slice ---> cfq_prio_slice
+{ 
+} 
+*/
