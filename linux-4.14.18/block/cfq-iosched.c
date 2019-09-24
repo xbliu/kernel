@@ -1089,18 +1089,34 @@ cfq_choose_req(struct cfq_data *cfqd, struct request *rq1, struct request *rq2, 
 #define CFQ_RQ1_WRAP	0x01 /* request 1 wraps */
 #define CFQ_RQ2_WRAP	0x02 /* request 2 wraps */
 	unsigned wrap = 0; /* bit mask: requests behind the disk head? */
-
+	/*
+	rq1:next rq2:prev
+	a.next为空或者两者相等选prev
+	*/
 	if (rq1 == NULL || rq1 == rq2)
 		return rq2;
+	/*a2.prev为空选next*/
 	if (rq2 == NULL)
 		return rq1;
-
+	/*a3.next prev中优先选择同步操作,都是同步next比prev优先选择*/
 	if (rq_is_sync(rq1) != rq_is_sync(rq2))
 		return rq_is_sync(rq1) ? rq1 : rq2;
-
+	/*a4.优先选择REQ_PRIO的操作*/
 	if ((rq1->cmd_flags ^ rq2->cmd_flags) & REQ_PRIO)
 		return rq1->cmd_flags & REQ_PRIO ? rq1 : rq2;
 
+	/*
+	a5.选择离last request sector差距最小的request
+	以last request sector为界线划分为三个部分
+	{
+		小于last_sec-back_max
+		last_sec-back_max与last_sec之间
+		大于last_sec
+	}
+	
+	|	<  back_max<32k>  last_sec  >  |
+	|__________|___________|___________|
+	*/
 	s1 = blk_rq_pos(rq1);
 	s2 = blk_rq_pos(rq2);
 
@@ -5118,3 +5134,15 @@ b. slice = base_slice + (div_u64(base_slice,CFQ_SLICE_SCALE) * (4 - prio)) //优
 c. 延迟计算 <cfq_scaled_cfqq_slice 函数>
 } 
 */
+
+/*
+****request分发规则 ****
+1)优先处理fifo列表中最后期限的request
+2)从以扇区为排序的rb tree中取出离最近取出的request扇区相近的两个request进行比较
+last request为最近分发的request <last_sector>,离其最近的扇区有如下两种备选:
+a.小于last request的sector <左孩子树中最右边孩子结点、沿父路径最左边父结点>
+b.大于last request的sector <右孩子树中最左边孩子结点、沿父路径最右边父结点 >
+c. a b中request中的最佳选择cfq_choose_req
+	核心是以磁头花费最少的移动 <向前移动比向后移动更容易>
+*/
+
