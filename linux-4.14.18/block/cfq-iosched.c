@@ -5081,7 +5081,7 @@ vfr = vfr * child->weight / parent->children_weight
 
 
 /*
-***cfq 分片时间*** 
+***cfq 时间片<分片时间??>规则*** 
 1)active cfq_queue 
 cfq_dispatch_request ---> cfq_select_queue ---> cfq_set_active_queue ---> __cfq_set_active_queue
 { 
@@ -5090,9 +5090,9 @@ cfq_dispatch_request ---> cfq_select_queue ---> cfq_set_active_queue ---> __cfq_
     slice_dispatch = 0 //分片周期内分发次数
     cfq_mark_cfqq_slice_new(cfqq) //标记为新的分片
 } 
-2)分片时间什么时候开始计算 
+2)时间片什么时候开始计算 
  //time when first request from queue completed and slice started.
- 当第一次分发的第一个请求完成时分片时间开始计算
+ 当第一次分发的第一个请求完成时时间片开始计算
  cfq_completed_request
  {
      if (cfqd->active_queue == cfqq) {
@@ -5101,11 +5101,16 @@ cfq_dispatch_request ---> cfq_select_queue ---> cfq_set_active_queue ---> __cfq_
     		}
      }
  }
-3)分片时间什么时候开始结束 
+3)时间片什么时候开始结束 
  a. cfq_dispatch_request ---> cfq_select_queue ---> cfq_slice_expired  //下一次分发时检测
- b. cfq_completed_request  ---> cfq_slice_expired  //request完成的时候检测
- 
-4)分片时间计算规则 
+                         ---> cfq_slice_expired //异步queue在时间片期间分发次数超过最大值
+ b. cfq_completed_request ---> cfq_slice_expired  //request完成的时候检测
+ c. cfq_insert_request ---> cfq_rq_enqueued ---> cfq_preempt_queue ---> cfq_slice_expired
+ //抢占当前活动cfq_queue
+ d. cfq_idle_slice_timer ---> cfq_slice_expired //活动的同步cfq_queue空转期间
+ <为什么活跃的cfq_queue需要空转?
+ 活跃的cfq_queue已完成所有request但时间片未用完,等待期间可能还新的request到来,可提高io吞吐量>
+4)时间片计算规则 
 cfq_set_prio_slice ---> cfq_scaled_cfqq_slice ---> cfq_prio_to_slice ---> cfq_prio_slice
 { 
 a. base_slice = cfqd->cfq_slice[cfq_cfqq_sync(cfqq)] //获取基准值
