@@ -1044,18 +1044,20 @@ EXPORT_SYMBOL(filp_clone_open);
 long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 {
 	struct open_flags op;
+    /*a1.用户层flags mode转换成kernel层flags*/
 	int fd = build_open_flags(flags, mode, &op);
 	struct filename *tmp;
 
 	if (fd)
 		return fd;
-
+    /*a2.将用户空间pathname复制到内核空间*/
 	tmp = getname(filename);
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
-
+    /*a3.获取可用fd<句柄>*/
 	fd = get_unused_fd_flags(flags);
 	if (fd >= 0) {
+        /*a4.打开文件*/
 		struct file *f = do_filp_open(dfd, tmp, &op);
 		if (IS_ERR(f)) {
 			put_unused_fd(fd);
@@ -1065,6 +1067,7 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 			fd_install(fd, f);
 		}
 	}
+    /*a5.释放内核空间pathname*/
 	putname(tmp);
 	return fd;
 }
@@ -1074,7 +1077,7 @@ SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
 	if (force_o_largefile())
 		flags |= O_LARGEFILE;
 
-	return do_sys_open(AT_FDCWD, filename, flags, mode);
+	return do_sys_open(AT_FDCWD, filename, flags, mode); //AT_FDCWD 当前工作目录
 }
 
 SYSCALL_DEFINE4(openat, int, dfd, const char __user *, filename, int, flags,

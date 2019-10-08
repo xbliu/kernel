@@ -134,7 +134,7 @@ getname_flags(const char __user *filename, int flags, int *empty)
 	result = audit_reusename(filename);
 	if (result)
 		return result;
-
+    /*a1.为name分配kernel空间*/
 	result = __getname();
 	if (unlikely(!result))
 		return ERR_PTR(-ENOMEM);
@@ -146,6 +146,7 @@ getname_flags(const char __user *filename, int flags, int *empty)
 	kname = (char *)result->iname;
 	result->name = kname;
 
+    /*a2.将路径名称从用户空间复制到kernel空间*/
 	len = strncpy_from_user(kname, filename, EMBEDDED_NAME_MAX);
 	if (unlikely(len < 0)) {
 		__putname(result);
@@ -158,6 +159,7 @@ getname_flags(const char __user *filename, int flags, int *empty)
 	 * names_cache allocation for the pathname, and re-do the copy from
 	 * userland.
 	 */
+    /*a2.1 name长度接近PATH_MAX,分配单独的filename结构,以便可以用整个names_cache长度来存储路径名称*/
 	if (unlikely(len == EMBEDDED_NAME_MAX)) {
 		const size_t size = offsetof(struct filename, iname[1]);
 		kname = (char *)result;
@@ -196,7 +198,7 @@ getname_flags(const char __user *filename, int flags, int *empty)
 			return ERR_PTR(-ENOENT);
 		}
 	}
-
+    /*a3.保存用户指针*/
 	result->uptr = filename;
 	result->aname = NULL;
 	audit_getname(result);
@@ -504,26 +506,26 @@ EXPORT_SYMBOL(path_put);
 
 #define EMBEDDED_LEVELS 2
 struct nameidata {
-	struct path	path;
-	struct qstr	last;
-	struct path	root;
+	struct path	path; /* 查找到的路径 */
+	struct qstr	last; /*路径中的最后一个component*/
+	struct path	root; /*进程根路径 */
 	struct inode	*inode; /* path.dentry.d_inode */
 	unsigned int	flags;
 	unsigned	seq, m_seq;
-	int		last_type;
-	unsigned	depth;
+	int		last_type;  /*路径中的最后一个component的类型*/
+	unsigned	depth; /* 符号链接嵌套的当前深度*/
 	int		total_link_count;
 	struct saved {
 		struct path link;
 		struct delayed_call done;
 		const char *name;
 		unsigned seq;
-	} *stack, internal[EMBEDDED_LEVELS];
+	} *stack, internal[EMBEDDED_LEVELS]; /* 与嵌套的符号链接关联的路径名数组 ???*/
 	struct filename	*name;
 	struct nameidata *saved;
 	struct inode	*link_inode;
 	unsigned	root_seq;
-	int		dfd;
+	int		dfd; /*基目录*/
 } __randomize_layout;
 
 static void set_nameidata(struct nameidata *p, int dfd, struct filename *name)
@@ -2150,6 +2152,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 	nd->last_type = LAST_ROOT; /* if there are only slashes... */
 	nd->flags = flags | LOOKUP_JUMPED | LOOKUP_PARENT;
 	nd->depth = 0;
+    /*a1.查找从根路径开始,则设置基路径为根路径*/
 	if (flags & LOOKUP_ROOT) {
 		struct dentry *root = nd->root.dentry;
 		struct inode *inode = root->d_inode;
@@ -2173,7 +2176,8 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 	nd->path.dentry = NULL;
 
 	nd->m_seq = read_seqbegin(&mount_lock);
-	if (*s == '/') {
+    /*a2.查找开始路径项设置*/
+	if (*s == '/') {/*b1. 基路径是以'/'开头的绝对路径,设置基路径为current->fs->root(当前进程文件根目录)*/
 		if (flags & LOOKUP_RCU)
 			rcu_read_lock();
 		set_root(nd);
@@ -2182,7 +2186,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 		nd->root.mnt = NULL;
 		rcu_read_unlock();
 		return ERR_PTR(-ECHILD);
-	} else if (nd->dfd == AT_FDCWD) {
+	} else if (nd->dfd == AT_FDCWD) {/*b2. 基路径是相对路径,设置基路径为current->fs->pwd(当前进程文件当前路径)*/
 		if (flags & LOOKUP_RCU) {
 			struct fs_struct *fs = current->fs;
 			unsigned seq;
@@ -2200,7 +2204,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 			nd->inode = nd->path.dentry->d_inode;
 		}
 		return s;
-	} else {
+	} else { /*b3. 基路径是文件描述符,设置为文件描述符的f_path*/
 		/* Caller must check execute permissions on the starting path component */
 		struct fd f = fdget_raw(nd->dfd);
 		struct dentry *dentry;
@@ -3492,7 +3496,7 @@ static struct file *path_openat(struct nameidata *nd,
 	struct file *file;
 	int opened = 0;
 	int error;
-
+    /*a1.获取可用的struct file*/
 	file = get_empty_filp();
 	if (IS_ERR(file))
 		return file;
@@ -3510,12 +3514,13 @@ static struct file *path_openat(struct nameidata *nd,
 			opened |= FILE_OPENED;
 		goto out2;
 	}
-
+    /*a2.路径初始化*/
 	s = path_init(nd, flags);
 	if (IS_ERR(s)) {
 		put_filp(file);
 		return ERR_CAST(s);
 	}
+    /*a3.路径查找*/
 	while (!(error = link_path_walk(s, nd)) &&
 		(error = do_last(nd, file, op, &opened)) > 0) {
 		nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
@@ -3549,8 +3554,9 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 	struct nameidata nd;
 	int flags = op->lookup_flags;
 	struct file *filp;
-
+    /*a1.设置nameidata <路径查找相关的中间数据>*/
 	set_nameidata(&nd, dfd, pathname);
+    /*a2.路径查找*/
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
 	if (unlikely(filp == ERR_PTR(-ECHILD)))
 		filp = path_openat(&nd, op, flags);
