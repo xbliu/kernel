@@ -506,13 +506,13 @@ EXPORT_SYMBOL(path_put);
 
 #define EMBEDDED_LEVELS 2
 struct nameidata {
-	struct path	path; /* 查找到的路径 */
-	struct qstr	last; /*路径中的最后一个component*/
-	struct path	root; /*进程根路径 */
-	struct inode	*inode; /* path.dentry.d_inode */
+	struct path	path; /*当前查找到的路径 */
+	struct qstr	last; /*当前子路径名及散列值/路径中的最后一个component*/
+	struct path	root; /*进程根目录*/
+	struct inode	*inode; /* path.dentry.d_inode 当前找到的目录项的inode*/
 	unsigned int	flags;
 	unsigned	seq, m_seq;
-	int		last_type;  /*路径中的最后一个component的类型*/
+	int		last_type;  /*当前节点类型/路径中的最后一个component的类型*/
 	unsigned	depth; /* 符号链接嵌套的当前深度*/
 	int		total_link_count;
 	struct saved {
@@ -813,7 +813,7 @@ static int complete_walk(struct nameidata *nd)
 
 	if (likely(!(dentry->d_flags & DCACHE_OP_WEAK_REVALIDATE)))
 		return 0;
-
+    /*a1.验证目录项*/
 	status = dentry->d_op->d_weak_revalidate(dentry, nd->flags);
 	if (status > 0)
 		return 0;
@@ -1021,11 +1021,12 @@ static __always_inline
 const char *get_link(struct nameidata *nd)
 {
 	struct saved *last = nd->stack + nd->depth - 1;
-	struct dentry *dentry = last->link.dentry;
-	struct inode *inode = nd->link_inode;
+	struct dentry *dentry = last->link.dentry; //当前链接dentry
+	struct inode *inode = nd->link_inode; //当前链接dentry inode
 	int error;
 	const char *res;
 
+    /*a1.更新访问时间 ???*/
 	if (!(nd->flags & LOOKUP_RCU)) {
 		touch_atime(&last->link);
 		cond_resched();
@@ -1034,14 +1035,15 @@ const char *get_link(struct nameidata *nd)
 			return ERR_PTR(-ECHILD);
 		touch_atime(&last->link);
 	}
-
+    /*a.安全操作 ???*/
 	error = security_inode_follow_link(dentry, inode,
 					   nd->flags & LOOKUP_RCU);
 	if (unlikely(error))
 		return ERR_PTR(error);
 
 	nd->last_type = LAST_BIND;
-	res = inode->i_link;
+	res = inode->i_link; //链接项名字符串(存储)
+    /*a3.获取链接路径,res不为空说明之前已经查找过链接项,则不用再次查找*/
 	if (!res) {
 		const char * (*get)(struct dentry *, struct inode *,
 				struct delayed_call *);
@@ -1059,12 +1061,13 @@ const char *get_link(struct nameidata *nd)
 		if (IS_ERR_OR_NULL(res))
 			return res;
 	}
+    /*a4.若链接的是绝对路径,则检查根路径是否设置*/
 	if (*res == '/') {
 		if (!nd->root.mnt)
 			set_root(nd);
 		if (unlikely(nd_jump_root(nd)))
 			return ERR_PTR(-ECHILD);
-		while (unlikely(*++res == '/'))
+		while (unlikely(*++res == '/')) //skip 头部连续的斜杠'/'
 			;
 	}
 	if (!*res)
@@ -1088,12 +1091,15 @@ int follow_up(struct path *path)
 	struct mount *parent;
 	struct dentry *mountpoint;
 
+    /*a1.无父挂载系统,直接返回*/
 	read_seqlock_excl(&mount_lock);
 	parent = mnt->mnt_parent;
 	if (parent == mnt) {
 		read_sequnlock_excl(&mount_lock);
 		return 0;
 	}
+
+    /*a2.切换到父挂载系统,子挂载系统的根目录即是父挂载系统的挂载点*/
 	mntget(&parent->mnt);
 	mountpoint = dget(mnt->mnt_mountpoint);
 	read_sequnlock_excl(&mount_lock);
@@ -1431,7 +1437,10 @@ EXPORT_SYMBOL(follow_down);
  * Skip to top of mountpoint pile in refwalk mode for follow_dotdot()
  */
 static void follow_mount(struct path *path)
-{
+{   
+    /*
+      挂载点有可能被多次挂载 如work目录依次挂载ext2,fat32,nfs等多个文件系统,最后挂载的覆盖之前的文件系统
+    */
 	while (d_mountpoint(path->dentry)) {
 		struct vfsmount *mounted = lookup_mnt(path);
 		if (!mounted)
@@ -1457,19 +1466,24 @@ static int path_parent_directory(struct path *path)
 static int follow_dotdot(struct nameidata *nd)
 {
 	while(1) {
+        /*a1.到达查找的根目录(即当前挂载点),退出
+          */
 		if (nd->path.dentry == nd->root.dentry &&
 		    nd->path.mnt == nd->root.mnt) {
 			break;
 		}
+        /*a2.若未达到当前挂载文件系统的根目录直接获取父目录项*/
 		if (nd->path.dentry != nd->path.mnt->mnt_root) {
 			int ret = path_parent_directory(&nd->path);
 			if (ret)
 				return ret;
 			break;
 		}
+        /*a3.达到当前挂载文件系统根目录项(挂载点),切换到上一级父挂载系统*/
 		if (!follow_up(&nd->path))
 			break;
 	}
+    /*a4.处理目录项是挂载点情况即目录项(path->dentry)是挂载点,则需切换文件系统*/
 	follow_mount(&nd->path);
 	nd->inode = nd->path.dentry->d_inode;
 	return 0;
@@ -1680,13 +1694,14 @@ static inline int may_lookup(struct nameidata *nd)
 
 static inline int handle_dots(struct nameidata *nd, int type)
 {
-	if (type == LAST_DOTDOT) {
+    /*若为当前目录不处理(因为当前目录项已查找到了),为上一级目录则进行处理*/
+    if (type == LAST_DOTDOT) {
 		if (!nd->root.mnt)
 			set_root(nd);
 		if (nd->flags & LOOKUP_RCU) {
 			return follow_dotdot_rcu(nd);
 		} else
-			return follow_dotdot(nd);
+			return follow_dotdot(nd); //上一级目录处理
 	}
 	return 0;
 }
@@ -1696,14 +1711,18 @@ static int pick_link(struct nameidata *nd, struct path *link,
 {
 	int error;
 	struct saved *last;
+    /*a1.嵌套达到最大值,保存结果退出
+      (为避免链接嵌套死循环,则当嵌套深度达到MAXSYMLINKS(40),结束查找)*/
 	if (unlikely(nd->total_link_count++ >= MAXSYMLINKS)) {
 		path_to_nameidata(link, nd);
 		return -ELOOP;
 	}
+
 	if (!(nd->flags & LOOKUP_RCU)) {
 		if (link->mnt == nd->path.mnt)
 			mntget(link->mnt);
 	}
+    /*a2.若嵌套的链接深度大于,则分配更大的一点stack用于链接查找。为什么一开始不分配最大的？*/
 	error = nd_alloc_stack(nd);
 	if (unlikely(error)) {
 		if (error == -ECHILD) {
@@ -1725,6 +1744,7 @@ static int pick_link(struct nameidata *nd, struct path *link,
 		}
 	}
 
+    /*a3.保存链接路径及链接inode*/
 	last = nd->stack + nd->depth++;
 	last->link = *link;
 	clear_delayed_call(&last->done);
@@ -1744,8 +1764,10 @@ enum {WALK_FOLLOW = 1, WALK_MORE = 2};
 static inline int step_into(struct nameidata *nd, struct path *path,
 			    int flags, struct inode *inode, unsigned seq)
 {
+    /*a1.当前处于符号链接查找中且是最后一分量,则释放链接 ???*/
 	if (!(flags & WALK_MORE) && nd->depth)
 		put_link(nd);
+    /*a2.非符号链接或者not follow  存放查找结果到nameidata中且更新当前目录项inode(即切换到当前搜索目录)*/
 	if (likely(!d_is_symlink(path->dentry)) ||
 	   !(flags & WALK_FOLLOW || nd->flags & LOOKUP_FOLLOW)) {
 		/* not a symlink or should not follow */
@@ -1759,6 +1781,7 @@ static inline int step_into(struct nameidata *nd, struct path *path,
 		if (read_seqcount_retry(&path->dentry->d_seq, seq))
 			return -ECHILD;
 	}
+    /*a3.选择链接*/
 	return pick_link(nd, path, inode, seq);
 }
 
@@ -1773,35 +1796,44 @@ static int walk_component(struct nameidata *nd, int flags)
 	 * to be able to know about the current root directory and
 	 * parent relationships.
 	 */
+    /*
+      a1.处理特殊的路径分量 当前路径分量与上一级目录路径分量 
+      （. ..代表当前路径及父路径,由于上一级路径可能是挂载点,所以需特殊处理）
+      */
 	if (unlikely(nd->last_type != LAST_NORM)) {
 		err = handle_dots(nd, nd->last_type);
 		if (!(flags & WALK_MORE) && nd->depth)
 			put_link(nd);
 		return err;
 	}
+    /*a2.快速查找路径分量(从dcache中快速查找dentry)*/
 	err = lookup_fast(nd, &path, &inode, &seq);
 	if (unlikely(err <= 0)) {
 		if (err < 0)
 			return err;
+        /*c1.根椐文件系统数据进行查找(从磁盘中读取数据进行查找)*/
 		path.dentry = lookup_slow(&nd->last, nd->path.dentry,
 					  nd->flags);
 		if (IS_ERR(path.dentry))
 			return PTR_ERR(path.dentry);
-
+        
+        /*c2.处理管理的目录项 
+          <transit management (autofs)/mountpoint/automount point>*/
 		path.mnt = nd->path.mnt;
 		err = follow_managed(&path, nd);
 		if (unlikely(err < 0))
 			return err;
-
+        /*c3.dentry是negative状态,则关联inode已不存在即目录项已被删除*/
 		if (unlikely(d_is_negative(path.dentry))) {
 			path_to_nameidata(&path, nd);
 			return -ENOENT;
 		}
 
+        /*c4.获取目录项对应的inode*/
 		seq = 0;	/* we are already out of RCU mode */
 		inode = d_backing_inode(path.dentry);
 	}
-
+    /*a3.切换到下一级dentry*/
 	return step_into(nd, &path, flags, inode, seq);
 }
 
@@ -2041,27 +2073,47 @@ static inline u64 hash_name(const void *salt, const char *name)
  * Returns 0 and nd will have valid dentry and mnt on success.
  * Returns error and drops reference to input namei data on failure.
  */
+//路径名解析函数:将路径名转换为最终的目录项
 static int link_path_walk(const char *name, struct nameidata *nd)
 {
 	int err;
 
+    /*a1.将路径字符串的最前面的斜杠符去掉.斜杠符可能有多个*/
 	while (*name=='/')
 		name++;
+
+    /*a2.路径只有根目录"/"则寻找的项就是起始项*/
 	if (!*name)
 		return 0;
 
 	/* At this point we know we have a real path component. */
+    /*a3.路径递归解析*/
+    /*
+	****name是一个长的路径字符串，每一层目录之间用斜杠符分隔.
+	***以"/"区分每一个路径分量,将每一个路径分量转化为dentry.即递归查找路径分量直到分量解析完毕
+	*/
 	for(;;) {
 		u64 hash_len;
 		int type;
 
+        /*b1.结点是否具有访问权限*/
 		err = may_lookup(nd);
 		if (err)
 			return err;
 
 		hash_len = hash_name(nd->path.dentry, name);
 
+        /*
+        查找项的类型有
+            LAST_NORM：正常目录
+            LAST_ROOT: 根("/")目录
+            LAST_DOT: 当前目录(".")
+            LAST_DOTDOT: 父目录".."
+            LAST_BIND: BIND目录<符号链接>
+        */
+        /*b2. 确定查找项的类型*/
 		type = LAST_NORM;
+        /*当前目录(.) 上一级目录/父目录(..) 两个特殊路径处理*/
 		if (name[0] == '.') switch (hashlen_len(hash_len)) {
 			case 2:
 				if (name[1] == '.') {
@@ -2072,6 +2124,8 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			case 1:
 				type = LAST_DOT;
 		}
+
+        /*b3.若是正常查找项,则优先使用目录项自已的哈稀算法,如fat文件系统,名字不区分大小所以可能不适合内核采用的哈稀算法*/
 		if (likely(type == LAST_NORM)) {
 			struct dentry *parent = nd->path.dentry;
 			nd->flags &= ~LOOKUP_JUMPED;
@@ -2085,13 +2139,17 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			}
 		}
 
+        /*last为快速字符串,存放路径名的上一级分量,包含路径名、长度及hash值(其中hash_len占高32位,hash值占低32位),为了快速查找(dcache)*/
 		nd->last.hash_len = hash_len;
 		nd->last.name = name;
 		nd->last_type = type;
 
+        /*b4.判断当前的分量是为空,为空则不解析*/
 		name += hashlen_len(hash_len);
 		if (!*name)
 			goto OK;
+
+        /*b5.忽略所有的斜杠('/')*/
 		/*
 		 * If it wasn't NUL, we know it was '/'. Skip that
 		 * slash, and continue until no more slashes.
@@ -2099,39 +2157,52 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 		do {
 			name++;
 		} while (unlikely(*name == '/'));
+
+        /*b6.分量解析*/
 		if (unlikely(!*name)) {
 OK:
-			/* pathname body, done */
+            /*c1.没有路径嵌套,路径分量解析完毕 (链接解析时增加depth值)*/
+            /* pathname body, done */
 			if (!nd->depth)
 				return 0;
+            /*c2.有路径嵌套,当前嵌套的路径已解析完,恢复上一层的路径*/
 			name = nd->stack[nd->depth - 1].name;
+            /*c3.符号链接解析完毕*/
 			/* trailing symlink, done */
 			if (!name)
 				return 0;
+            /*c4.解析嵌套符号链接的最后一个分量*/
 			/* last component of nested symlink */
 			err = walk_component(nd, WALK_FOLLOW);
 		} else {
+            /*c1.不是最后一个分量,需继续解析*/
 			/* not the last component */
 			err = walk_component(nd, WALK_FOLLOW | WALK_MORE);
 		}
+        /*b7.出错退出解析*/
 		if (err < 0)
 			return err;
 
+        /*b8.符号链接处理*/
 		if (err) {
+            /*c1.获取符号链接真实路径名*/
 			const char *s = get_link(nd);
 
 			if (IS_ERR(s))
 				return PTR_ERR(s);
 			err = 0;
-			if (unlikely(!s)) {
+			if (unlikely(!s)) { //空链接不做处理
 				/* jumped */
 				put_link(nd);
 			} else {
+                /*c2.保存当前路径名,接下来解析符号链接路径*/
 				nd->stack[nd->depth - 1].name = name;
 				name = s;
 				continue;
 			}
 		}
+
+        /*b9.这里只有目录才需要解析,若解析出为非目录类型,则说明不存存或者出错了*/
 		if (unlikely(!d_can_lookup(nd->path.dentry))) {
 			if (nd->flags & LOOKUP_RCU) {
 				if (unlazy_walk(nd))
@@ -2142,6 +2213,29 @@ OK:
 	}
 }
 
+/*
+***查找的路径可能是绝对路径也可以是相对路径 
+***绝对路径则以'/'开头 
+***相对路径(以啥作为参考)则有以下两种情况: 
+***a.进程的当前工作目录
+***b.进程已打开的目录<系统调用openat>
+ 
+***Q:openat有何作用或者说解决了什么问题? 
+***A:
+1)让线程可以使用相对路径名打开目录中的文件,而不再只能打开当前工作目录.
+2)可以避免time-of-check-to-time-of-use（TOCTTOU）错误。
+TOCTTOU错误的基本思想是：
+   如果有两个基于文件的函数调用,其中第二个调用依赖于第一个调用结果,那么程序是脆弱的。 
+如果两个调用并不是原子操作,在两个函数调用之间文件可能改变了,这样也就造成了第一个调用的结果就不再有效,
+使得程序最终的结果是错误的.文件系统命名空间中的TOCTTOU错误通常处理的就是那些覆盖文件系统权限的小把戏, 
+这些小把戏通过骗取特权程序降低特权文件的权限控制或者让特权文件打开一个安全漏洞等方式进行. 
+ 
+简单点说，它们是为了防止在用相对路径使用访问文件时,不同进程/线程对文件夹访问的竞争. 
+现在考虑这样一种攻击: “setuid受害者”进程会在 open()中使用了相对路径 ./foo.txt 打开一个文件, 
+并随后进行操作。攻击者可以将“受害者”进程的工作目录修改指向为敏感目录,从而修改不同文件. 
+但如果我们能够保证有一个确定合法的文件夹句柄(文件描述符),然后使用 openat() 访问相对的文件， 
+那么即使攻击者修改了“那个”目录，我们在进程中依然可以确保访问文件夹/文件是合法的.
+*/
 static const char *path_init(struct nameidata *nd, unsigned flags)
 {
 	const char *s = nd->name->name;
@@ -2176,8 +2270,8 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 	nd->path.dentry = NULL;
 
 	nd->m_seq = read_seqbegin(&mount_lock);
-    /*a2.查找开始路径项设置*/
-	if (*s == '/') {/*b1. 基路径是以'/'开头的绝对路径,设置基路径为current->fs->root(当前进程文件根目录)*/
+    /*a2.查找基路径设置*/
+	if (*s == '/') {/*b1. 基路径是以'/'开头的绝对路径,设置基路径为current->fs->root(当前进程的文件根目录)*/
 		if (flags & LOOKUP_RCU)
 			rcu_read_lock();
 		set_root(nd);
@@ -2186,7 +2280,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 		nd->root.mnt = NULL;
 		rcu_read_unlock();
 		return ERR_PTR(-ECHILD);
-	} else if (nd->dfd == AT_FDCWD) {/*b2. 基路径是相对路径,设置基路径为current->fs->pwd(当前进程文件当前路径)*/
+	} else if (nd->dfd == AT_FDCWD) {/*b2. 基路径是相对路径,设置基路径为current->fs->pwd(当前进程的文件当前路径)*/
 		if (flags & LOOKUP_RCU) {
 			struct fs_struct *fs = current->fs;
 			unsigned seq;
@@ -2204,7 +2298,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 			nd->inode = nd->path.dentry->d_inode;
 		}
 		return s;
-	} else { /*b3. 基路径是文件描述符,设置为文件描述符的f_path*/
+	} else { /*b3. 基路径是已打开基目录的文件描述符,设置为此文件描述符的f_path,file=current->files->fdt[fd],file->f_path*/
 		/* Caller must check execute permissions on the starting path component */
 		struct fd f = fdget_raw(nd->dfd);
 		struct dentry *dentry;
@@ -2215,13 +2309,13 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 		dentry = f.file->f_path.dentry;
 
 		if (*s) {
-			if (!d_can_lookup(dentry)) {
+			if (!d_can_lookup(dentry)) { /*检查已打开目录的目录项是否合法*/
 				fdput(f);
 				return ERR_PTR(-ENOTDIR);
 			}
 		}
 
-		nd->path = f.file->f_path;
+		nd->path = f.file->f_path; /* 根据fd找到file，使用file的path */
 		if (flags & LOOKUP_RCU) {
 			rcu_read_lock();
 			nd->inode = nd->path.dentry->d_inode;
@@ -3111,6 +3205,7 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 		return -ENOENT;
 
 	*opened &= ~FILE_CREATED;
+    /*a1.查找上一级分量的dentry,若未找到则分配一个*/
 	dentry = d_lookup(dir, &nd->last);
 	for (;;) {
 		if (!dentry) {
@@ -3118,9 +3213,10 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 			if (IS_ERR(dentry))
 				return PTR_ERR(dentry);
 		}
+        /*正在dcache查找中,则不用再次查找*/
 		if (d_in_lookup(dentry))
 			break;
-
+        /*验证目录项的有效性*/
 		error = d_revalidate(dentry, nd->flags);
 		if (likely(error > 0))
 			break;
@@ -3179,7 +3275,8 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 	}
 
 no_open:
-	if (d_in_lookup(dentry)) {
+    /*a2.dentry的inode查找 ???*/
+    if (d_in_lookup(dentry)) {
 		struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry,
 							     nd->flags);
 		d_lookup_done(dentry);
@@ -3194,6 +3291,7 @@ no_open:
 	}
 
 	/* Negative dentry, just create the file */
+    /*a3.Negative dentry(无效的目录项)则创建此结点*/
 	if (!dentry->d_inode && (open_flag & O_CREAT)) {
 		*opened |= FILE_CREATED;
 		audit_inode_child(dir_inode, dentry, AUDIT_TYPE_CHILD_CREATE);
@@ -3202,7 +3300,7 @@ no_open:
 			goto out_dput;
 		}
 		error = dir_inode->i_op->create(dir_inode, dentry, mode,
-						open_flag & O_EXCL);
+						open_flag & O_EXCL); //inode创建
 		if (error)
 			goto out_dput;
 		fsnotify_create(dir_inode, dentry);
@@ -3224,6 +3322,11 @@ out_dput:
 /*
  * Handle the last step of open()
  */
+/* 
+  link_path_walk 处理的路径最后一个分量是没有查找的
+  如:目录 /home/work或/home/work最后一个分量为work,是不查找的,
+    文件 /home/work/file 最后一个分量为file,是不查找的
+  */
 static int do_last(struct nameidata *nd,
 		   struct file *file, const struct open_flags *op,
 		   int *opened)
@@ -3241,6 +3344,7 @@ static int do_last(struct nameidata *nd,
 	nd->flags &= ~LOOKUP_PARENT;
 	nd->flags |= op->intent;
 
+    /*a1.当前分量(上一级分量)不是正常查找项的话,处理当前目录与上一级目录*/
 	if (nd->last_type != LAST_NORM) {
 		error = handle_dots(nd, nd->last_type);
 		if (unlikely(error))
@@ -3248,9 +3352,11 @@ static int do_last(struct nameidata *nd,
 		goto finish_open;
 	}
 
+    /*a2.查找当前分量(上一级分量)*/
 	if (!(open_flag & O_CREAT)) {
 		if (nd->last.name[nd->last.len])
 			nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+        /*b1.快速查找当前分量*/
 		/* we _can_ be in RCU mode here */
 		error = lookup_fast(nd, &path, &inode, &seq);
 		if (likely(error > 0))
@@ -3268,6 +3374,7 @@ static int do_last(struct nameidata *nd,
 		 * has been cleared when we got to the last component we are
 		 * about to look up
 		 */
+        /*b1.结束path walk*/
 		error = complete_walk(nd);
 		if (error)
 			return error;
@@ -3278,6 +3385,7 @@ static int do_last(struct nameidata *nd,
 			return -EISDIR;
 	}
 
+    /*a3.标记是否可写*/
 	if (open_flag & (O_CREAT | O_TRUNC | O_WRONLY | O_RDWR)) {
 		error = mnt_want_write(nd->path.mnt);
 		if (!error)
@@ -3292,6 +3400,7 @@ static int do_last(struct nameidata *nd,
 		inode_lock(dir->d_inode);
 	else
 		inode_lock_shared(dir->d_inode);
+    /*a4.查找并打开*/
 	error = lookup_open(nd, &path, file, op, got_write, opened);
 	if (open_flag & O_CREAT)
 		inode_unlock(dir->d_inode);
@@ -3309,7 +3418,7 @@ static int do_last(struct nameidata *nd,
 		audit_inode(nd->name, file->f_path.dentry, 0);
 		goto opened;
 	}
-
+    /*a5.创建的话则保存搜索结果*/
 	if (*opened & FILE_CREATED) {
 		/* Don't check for write permission, don't truncate */
 		open_flag &= ~O_TRUNC;
@@ -3328,7 +3437,7 @@ static int do_last(struct nameidata *nd,
 		mnt_drop_write(nd->path.mnt);
 		got_write = false;
 	}
-
+    /*a6.处理管理的目录项*/
 	error = follow_managed(&path, nd);
 	if (unlikely(error < 0))
 		return error;
@@ -3351,7 +3460,8 @@ static int do_last(struct nameidata *nd,
 	seq = 0;	/* out of RCU mode, so the value doesn't matter */
 	inode = d_backing_inode(path.dentry);
 finish_lookup:
-	error = step_into(nd, &path, 0, inode, seq);
+    /*a7.切换到当前目录项*/
+    error = step_into(nd, &path, 0, inode, seq);
 	if (unlikely(error))
 		return error;
 finish_open:
@@ -3375,11 +3485,14 @@ finish_open:
 			goto out;
 		got_write = true;
 	}
+    /*a9.打开文件*/
 finish_open_created:
+    /*b1.打开检测*/
 	error = may_open(&nd->path, acc_mode, open_flag);
 	if (error)
 		goto out;
 	BUG_ON(*opened & FILE_OPENED); /* once it's opened, it's opened */
+    /*b2.打开文件*/
 	error = vfs_open(&nd->path, file, current_cred());
 	if (error)
 		goto out;
@@ -3388,6 +3501,7 @@ opened:
 	error = open_check_o_direct(file);
 	if (!error)
 		error = ima_file_check(file, op->acc_mode, *opened);
+    /*b3.truncate处理*/
 	if (!error && will_truncate)
 		error = handle_truncate(file);
 out:
@@ -3524,12 +3638,14 @@ static struct file *path_openat(struct nameidata *nd,
 	while (!(error = link_path_walk(s, nd)) &&
 		(error = do_last(nd, file, op, &opened)) > 0) {
 		nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
+        /*最后一个分量为符号链接,获取路径字符串,继续路径查找*/
 		s = trailing_symlink(nd);
 		if (IS_ERR(s)) {
 			error = PTR_ERR(s);
 			break;
 		}
 	}
+    /*a4.搜索结束收尾工作*/
 	terminate_walk(nd);
 out2:
 	if (!(opened & FILE_OPENED)) {
