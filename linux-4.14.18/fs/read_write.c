@@ -569,8 +569,11 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	ssize_t ret = -EBADF;
 
 	if (f.file) {
+        /*a1. 获取file上一次操作结束位置(即这一次操作起点)*/
 		loff_t pos = file_pos_read(f.file);
+        /*a2. 读文件*/
 		ret = vfs_read(f.file, buf, count, &pos);
+        /*a3. 更新操作位置*/
 		if (ret >= 0)
 			file_pos_write(f.file, pos);
 		fdput_pos(f);
