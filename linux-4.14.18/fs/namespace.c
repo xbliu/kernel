@@ -690,7 +690,10 @@ struct mount *__lookup_mnt(struct vfsmount *mnt, struct dentry *dentry)
 {
 	struct hlist_head *head = m_hash(mnt, dentry);
 	struct mount *p;
-
+    /* 
+      mnt_parent->mnt == mnt 说明文件系统的根目录是直接mount在当前目录下的 
+      mnt_mountpoint == dentry mnt_mountpoint所对应的dentry是不一样的(唯一),但inode指向同一个
+      */
 	hlist_for_each_entry_rcu(p, head, mnt_hash)
 		if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
 			return p;

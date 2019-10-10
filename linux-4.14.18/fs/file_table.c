@@ -120,6 +120,7 @@ struct file *get_empty_filp(void)
 			goto over;
 	}
 
+    /*a1.分配struct file*/
 	f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
 	if (unlikely(!f))
 		return ERR_PTR(-ENOMEM);
@@ -132,6 +133,7 @@ struct file *get_empty_filp(void)
 		return ERR_PTR(error);
 	}
 
+    /*a2.file初始化*/
 	atomic_long_set(&f->f_count, 1);
 	rwlock_init(&f->f_owner.lock);
 	spin_lock_init(&f->f_lock);

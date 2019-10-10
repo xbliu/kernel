@@ -65,7 +65,7 @@ struct mnt_namespace;
 #define MNT_UMOUNT		0x8000000
 
 struct vfsmount {
-	struct dentry *mnt_root;	/* root of the mounted tree */
+	struct dentry *mnt_root;	/* root of the mounted tree */ //根目录项
 	struct super_block *mnt_sb;	/* pointer to superblock */
 	int mnt_flags;
 } __randomize_layout;

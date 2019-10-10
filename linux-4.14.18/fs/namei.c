@@ -608,7 +608,8 @@ static void drop_links(struct nameidata *nd)
 }
 
 static void terminate_walk(struct nameidata *nd)
-{
+{   
+    /*a1.回调link的相关函数*/
 	drop_links(nd);
 	if (!(nd->flags & LOOKUP_RCU)) {
 		int i;
@@ -625,6 +626,7 @@ static void terminate_walk(struct nameidata *nd)
 			nd->root.mnt = NULL;
 		rcu_read_unlock();
 	}
+    /*a2.depth复位*/
 	nd->depth = 0;
 }
 
@@ -1147,7 +1149,7 @@ static int follow_automount(struct path *path, struct nameidata *nd,
 	nd->total_link_count++;
 	if (nd->total_link_count >= 40)
 		return -ELOOP;
-
+    /*a1.开始自动挂载*/
 	mnt = path->dentry->d_op->d_automount(path);
 	if (IS_ERR(mnt)) {
 		/*
@@ -1172,6 +1174,7 @@ static int follow_automount(struct path *path, struct nameidata *nd,
 		mntget(path->mnt);
 		*need_mntput = true;
 	}
+    /*a2.结束自动挂载:将mount加入mount tree中*/
 	err = finish_automount(mnt, path);
 
 	switch (err) {
@@ -1199,6 +1202,14 @@ static int follow_automount(struct path *path, struct nameidata *nd,
  *
  * Serialization is taken care of in namespace.c
  */
+/* 
+1. transit management (autofs) <用时挂载不用时卸载> <dentry有可能dcache中>
+ Autofs非常方便,主要有两点：
+              i.设置开机不一定要挂载的目录,当用的时候才实现自动挂载.
+              ii.用户不使用自动挂载的目录一段的时间,会自动卸载.
+2. mountpoint dentry作为多个文件系统的挂载点,用户可见的是最后一个挂载的文件系统(最底层) <dentry在dcache中> 
+3. automount point (autofs4/debugfs/afs/cifs) <dentry在dcache中>
+*/
 static int follow_managed(struct path *path, struct nameidata *nd)
 {
 	struct vfsmount *mnt = path->mnt; /* held by caller, must be left alone */
@@ -1217,20 +1228,21 @@ static int follow_managed(struct path *path, struct nameidata *nd)
 		if (managed & DCACHE_MANAGE_TRANSIT) {
 			BUG_ON(!path->dentry->d_op);
 			BUG_ON(!path->dentry->d_op->d_manage);
+            //目前只用于autofs文件系统，用于监控自动挂载的状态
 			ret = path->dentry->d_op->d_manage(path, false);
 			if (ret < 0)
 				break;
 		}
 
 		/* Transit to a mounted filesystem. */
-		if (managed & DCACHE_MOUNTED) {
-			struct vfsmount *mounted = lookup_mnt(path);
+		if (managed & DCACHE_MOUNTED) { //获取挂载点的最底层文件系统
+			struct vfsmount *mounted = lookup_mnt(path);//查找当前文件系统的struct vfsmount实例
 			if (mounted) {
 				dput(path->dentry);
 				if (need_mntput)
 					mntput(path->mnt);
 				path->mnt = mounted;
-				path->dentry = dget(mounted->mnt_root);
+				path->dentry = dget(mounted->mnt_root); //当前文件系统根目录(挂载点)
 				need_mntput = true;
 				continue;
 			}
@@ -1242,7 +1254,7 @@ static int follow_managed(struct path *path, struct nameidata *nd)
 		}
 
 		/* Handle an automount point */
-		if (managed & DCACHE_NEED_AUTOMOUNT) {
+		if (managed & DCACHE_NEED_AUTOMOUNT) { //自动挂载
 			ret = follow_automount(path, nd, &need_mntput);
 			if (ret < 0)
 				break;
@@ -1439,14 +1451,17 @@ EXPORT_SYMBOL(follow_down);
 static void follow_mount(struct path *path)
 {   
     /*
-      挂载点有可能被多次挂载 如work目录依次挂载ext2,fat32,nfs等多个文件系统,最后挂载的覆盖之前的文件系统
+      挂载点有可能被多次挂载 如work目录依次挂载ext2,fat32,nfs等多个文件系统,最后挂载的覆盖之前的文件系统.  
+      即显示给用户的是最后一个,之前的被隐藏了,所以要找到最底层的文件系统
     */
 	while (d_mountpoint(path->dentry)) {
+        /*a1.获取挂载点的第一个孩子挂载文件系统*/
 		struct vfsmount *mounted = lookup_mnt(path);
 		if (!mounted)
 			break;
 		dput(path->dentry);
 		mntput(path->mnt);
+        /*a2.切换到孩子挂载文件系统*/
 		path->mnt = mounted;
 		path->dentry = dget(mounted->mnt_root);
 	}
@@ -1466,7 +1481,7 @@ static int path_parent_directory(struct path *path)
 static int follow_dotdot(struct nameidata *nd)
 {
 	while(1) {
-        /*a1.到达查找的根目录(即当前挂载点),退出
+        /*a1.到达进程查找的根目录(即当前挂载点/根节点),退出
           */
 		if (nd->path.dentry == nd->root.dentry &&
 		    nd->path.mnt == nd->root.mnt) {
@@ -1479,11 +1494,11 @@ static int follow_dotdot(struct nameidata *nd)
 				return ret;
 			break;
 		}
-        /*a3.达到当前挂载文件系统根目录项(挂载点),切换到上一级父挂载系统*/
+        /*a3.达到当前挂载文件系统根目录项(挂载点),切换到上一级父挂载系统,并不退出*/
 		if (!follow_up(&nd->path))
 			break;
 	}
-    /*a4.处理目录项是挂载点情况即目录项(path->dentry)是挂载点,则需切换文件系统*/
+    /*a4.处理目录项(path->dentry)是挂载点且被多次挂载的情况即需切换到最底层的挂载文件系统(最后一次挂载)*/
 	follow_mount(&nd->path);
 	nd->inode = nd->path.dentry->d_inode;
 	return 0;
@@ -1613,9 +1628,11 @@ static int lookup_fast(struct nameidata *nd,
 			/* we'd been told to redo it in non-rcu mode */
 			status = d_revalidate(dentry, nd->flags);
 	} else {
+        /*a1.从dcache中查找(dentry缓存在dentry_hashtable表中,可加速查找)*/
 		dentry = __d_lookup(parent, &nd->last);
 		if (unlikely(!dentry))
 			return 0;
+        /*a2.验证dentry的状态(用于确认从哈希链表中所查找到的目录项及其相应的数据是否仍然有效)*/
 		status = d_revalidate(dentry, nd->flags);
 	}
 	if (unlikely(status <= 0)) {
@@ -1631,6 +1648,7 @@ static int lookup_fast(struct nameidata *nd,
 
 	path->mnt = mnt;
 	path->dentry = dentry;
+    /*a3.处理管理的dentry:dentry可能作为多个文件系统的挂载点*/
 	err = follow_managed(path, nd);
 	if (likely(err > 0))
 		*inode = d_backing_inode(path->dentry);
@@ -1651,6 +1669,7 @@ static struct dentry *lookup_slow(const struct qstr *name,
 	if (unlikely(IS_DEADDIR(inode)))
 		goto out;
 again:
+    /*a1.分醒dentry,设置DCACHE_PAR_LOOKUP(正在查找中,防止发起两次慢速查找)*/
 	dentry = d_alloc_parallel(dir, name, &wq);
 	if (IS_ERR(dentry))
 		goto out;
@@ -1668,7 +1687,9 @@ again:
 			}
 		}
 	} else {
+        /*a2.具体的文件系统查找inode*/
 		old = inode->i_op->lookup(inode, dentry, flags);
+        /*a3.完成查找,清除DCACHE_PAR_LOOKUP*/
 		d_lookup_done(dentry);
 		if (unlikely(old)) {
 			dput(dentry);
@@ -1798,8 +1819,8 @@ static int walk_component(struct nameidata *nd, int flags)
 	 */
     /*
       a1.处理特殊的路径分量 当前路径分量与上一级目录路径分量 
-      （. ..代表当前路径及父路径,由于上一级路径可能是挂载点,所以需特殊处理）
-      */
+      (. ..代表当前路径及父路径,由于上一级路径可能是挂载点,所以需特殊处理)
+    */
 	if (unlikely(nd->last_type != LAST_NORM)) {
 		err = handle_dots(nd, nd->last_type);
 		if (!(flags & WALK_MORE) && nd->depth)
@@ -1818,7 +1839,11 @@ static int walk_component(struct nameidata *nd, int flags)
 			return PTR_ERR(path.dentry);
         
         /*c2.处理管理的目录项 
-          <transit management (autofs)/mountpoint/automount point>*/
+          <transit management (autofs)/mountpoint/automount point>
+        inode首次从磁盘加载到内存:
+        1)此inode被autofs(临时管理)transit management (用时挂载不用时卸载)
+        2)此inode为自动挂载点
+        */
 		path.mnt = nd->path.mnt;
 		err = follow_managed(&path, nd);
 		if (unlikely(err < 0))
@@ -3205,7 +3230,7 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 		return -ENOENT;
 
 	*opened &= ~FILE_CREATED;
-    /*a1.查找上一级分量的dentry,若未找到则分配一个*/
+    /*a1.查找上一级分量的dentry,若未找到则分配一个(先dcache再磁盘)*/
 	dentry = d_lookup(dir, &nd->last);
 	for (;;) {
 		if (!dentry) {
@@ -3275,7 +3300,7 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 	}
 
 no_open:
-    /*a2.dentry的inode查找 ???*/
+    /*a2.dentry的inode查找 只有新分配的dentry才需要从磁盘加载对应的inode*/
     if (d_in_lookup(dentry)) {
 		struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry,
 							     nd->flags);
@@ -3400,7 +3425,7 @@ static int do_last(struct nameidata *nd,
 		inode_lock(dir->d_inode);
 	else
 		inode_lock_shared(dir->d_inode);
-    /*a4.查找并打开*/
+    /*a4.查找dentry与相应的inode,O_CREAT表示可创建inode*/
 	error = lookup_open(nd, &path, file, op, got_write, opened);
 	if (open_flag & O_CREAT)
 		inode_unlock(dir->d_inode);
@@ -3603,6 +3628,15 @@ static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 	return error;
 }
 
+/*
+路径查找广泛的说必须得做以下几件事情：
+     1.寻找路径的起点
+     2.inodes的权限及有效性检查
+     3.以父dache与名称为元组进行dcache 哈稀查找
+     4.遍历安装点
+     5.遍历符号链接
+     6.查找并按需创建路径缺失的部分
+*/
 static struct file *path_openat(struct nameidata *nd,
 			const struct open_flags *op, unsigned flags)
 {
@@ -3670,7 +3704,7 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 	struct nameidata nd;
 	int flags = op->lookup_flags;
 	struct file *filp;
-    /*a1.设置nameidata <路径查找相关的中间数据>*/
+    /*a1.设置nameidata <路径查找相关的中间数据>并保存当前进程的nameidata*/
 	set_nameidata(&nd, dfd, pathname);
     /*a2.路径查找*/
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
@@ -3678,6 +3712,7 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 		filp = path_openat(&nd, op, flags);
 	if (unlikely(filp == ERR_PTR(-ESTALE)))
 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
+    /*a3.恢复当前进程的nameidata并更新total_link_count值*/
 	restore_nameidata();
 	return filp;
 }

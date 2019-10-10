@@ -699,7 +699,7 @@ static int do_dentry_open(struct file *f,
 {
 	static const struct file_operations empty_fops = {};
 	int error;
-
+    /*a1.f_mode f_inode f_mapping f_op 赋值*/
 	f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK |
 				FMODE_PREAD | FMODE_PWRITE;
 
@@ -710,6 +710,10 @@ static int do_dentry_open(struct file *f,
 	/* Ensure that we skip any errors that predate opening of the file */
 	f->f_wb_err = filemap_sample_wb_err(f->f_mapping);
 
+    /*
+    O_PATH目的:指示在文件系统的位置、执行纯粹文件描述符级别的操作 
+    用途:openat作为传入dfd参数、fstat(获取文件信息)等
+    */
 	if (unlikely(f->f_flags & O_PATH)) {
 		f->f_mode = FMODE_PATH;
 		f->f_op = &empty_fops;
@@ -748,6 +752,7 @@ static int do_dentry_open(struct file *f,
 
 	if (!open)
 		open = f->f_op->open;
+    /*a2.调用具体文件系统的open*/
 	if (open) {
 		error = open(inode, f);
 		if (error)
@@ -857,12 +862,17 @@ EXPORT_SYMBOL(file_path);
 int vfs_open(const struct path *path, struct file *file,
 	     const struct cred *cred)
 {
+    /* 
+      a1.dentry is on a union/overlay, then return the underlying, real dentry. 
+      Otherwise return the dentry itself
+    */
 	struct dentry *dentry = d_real(path->dentry, NULL, file->f_flags, 0);
 
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
-	file->f_path = *path;
+	file->f_path = *path;//保存path mnt与dentry才能确定一个文件
+    /*a2.struct file赋值(mode inode mapping fops)*/
 	return do_dentry_open(file, d_backing_inode(dentry), NULL, cred);
 }
 
