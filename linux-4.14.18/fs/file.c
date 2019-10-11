@@ -625,16 +625,25 @@ int __close_fd(struct files_struct *files, unsigned fd)
 	struct fdtable *fdt;
 
 	spin_lock(&files->file_lock);
+
+    /*a1.获取fdtalbe:管理当前进程所有打开的fd*/
 	fdt = files_fdtable(files);
 	if (fd >= fdt->max_fds)
 		goto out_unlock;
+
+    /*a2.获取file:当前进程所有的 file都存放在fdt->fd数组中*/
 	file = fdt->fd[fd];
 	if (!file)
 		goto out_unlock;
 	rcu_assign_pointer(fdt->fd[fd], NULL);
+
+    /*a4.清除close_on_exec位:为什么 ???*/
 	__clear_close_on_exec(fd, fdt);
+    /*a5.标记fd为未使用,更新next_fd：这样下次再打开可以不用再查找*/
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
+
+    /*a6.将缓存写入文件,*/
 	return filp_close(file, files);
 
 out_unlock:

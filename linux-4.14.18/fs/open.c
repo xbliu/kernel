@@ -1145,13 +1145,16 @@ int filp_close(struct file *filp, fl_owner_t id)
 		return 0;
 	}
 
+    /*a1.caceh写入文件*/
 	if (filp->f_op->flush)
 		retval = filp->f_op->flush(filp, id);
 
+    /*a2.o_path相关处理*/
 	if (likely(!(filp->f_mode & FMODE_PATH))) {
 		dnotify_flush(filp, id);
 		locks_remove_posix(filp, id);
 	}
+    /*a3.释放struct file*/
 	fput(filp);
 	return retval;
 }
@@ -1165,6 +1168,7 @@ EXPORT_SYMBOL(filp_close);
  */
 SYSCALL_DEFINE1(close, unsigned int, fd)
 {
+    /*a1. 关闭当前进程的fd所属文件*/
 	int retval = __close_fd(current->files, fd);
 
 	/* can't restart close syscall because file table entry was cleared */

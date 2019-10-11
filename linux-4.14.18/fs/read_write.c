@@ -394,12 +394,15 @@ static ssize_t new_sync_read(struct file *filp, char __user *buf, size_t len, lo
 	struct iov_iter iter;
 	ssize_t ret;
 
+    /*a1.初始化iovec与iter(io向量与迭代器)*/
 	init_sync_kiocb(&kiocb, filp);
 	kiocb.ki_pos = *ppos;
 	iov_iter_init(&iter, READ, &iov, 1, len);
 
+    /*a2.使f_op->read_iter读取*/
 	ret = call_read_iter(filp, &kiocb, &iter);
 	BUG_ON(ret == -EIOCBQUEUED);
+    /*a3.更新操作位置*/
 	*ppos = kiocb.ki_pos;
 	return ret;
 }
@@ -407,9 +410,9 @@ static ssize_t new_sync_read(struct file *filp, char __user *buf, size_t len, lo
 ssize_t __vfs_read(struct file *file, char __user *buf, size_t count,
 		   loff_t *pos)
 {
-	if (file->f_op->read)
+	if (file->f_op->read) //直接使用inode的f_op操作
 		return file->f_op->read(file, buf, count, pos);
-	else if (file->f_op->read_iter)
+	else if (file->f_op->read_iter) //向量读:可以将文件内容放到多个buf上.
 		return new_sync_read(file, buf, count, pos);
 	else
 		return -EINVAL;
@@ -439,11 +442,12 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 		return -EINVAL;
 	if (unlikely(!access_ok(VERIFY_WRITE, buf, count)))
 		return -EFAULT;
-
+    /*a1.验证区域是否可操作即操作区域安全检查*/
 	ret = rw_verify_area(READ, file, pos, count);
 	if (!ret) {
 		if (count > MAX_RW_COUNT)
 			count =  MAX_RW_COUNT;
+        /*a2.从内容读取到buf*/
 		ret = __vfs_read(file, buf, count, pos);
 		if (ret > 0) {
 			fsnotify_access(file);
@@ -462,12 +466,16 @@ static ssize_t new_sync_write(struct file *filp, const char __user *buf, size_t 
 	struct iov_iter iter;
 	ssize_t ret;
 
+    /*a1.初始化iovec与iter(io向量与迭代器)*/
 	init_sync_kiocb(&kiocb, filp);
 	kiocb.ki_pos = *ppos;
 	iov_iter_init(&iter, WRITE, &iov, 1, len);
 
+    /*a2.使f_op->writ_iter写入*/
 	ret = call_write_iter(filp, &kiocb, &iter);
 	BUG_ON(ret == -EIOCBQUEUED);
+
+    /*a3.写入成功更新操作位置*/
 	if (ret > 0)
 		*ppos = kiocb.ki_pos;
 	return ret;
@@ -476,9 +484,9 @@ static ssize_t new_sync_write(struct file *filp, const char __user *buf, size_t 
 ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
 		    loff_t *pos)
 {
-	if (file->f_op->write)
+	if (file->f_op->write) //直接使用inode的f_op操作
 		return file->f_op->write(file, p, count, pos);
-	else if (file->f_op->write_iter)
+	else if (file->f_op->write_iter) //向量写:可以将多个buf写入file
 		return new_sync_write(file, p, count, pos);
 	else
 		return -EINVAL;
@@ -536,17 +544,21 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 	if (unlikely(!access_ok(VERIFY_READ, buf, count)))
 		return -EFAULT;
 
+    /*a1.验证区域是否可操作即操作区域安全检查*/
 	ret = rw_verify_area(WRITE, file, pos, count);
 	if (!ret) {
 		if (count > MAX_RW_COUNT)
 			count =  MAX_RW_COUNT;
+        /*a2.写加锁(防止多个进程竞争)*/
 		file_start_write(file);
+        /*a3.将buf写入file*/
 		ret = __vfs_write(file, buf, count, pos);
 		if (ret > 0) {
 			fsnotify_modify(file);
 			add_wchar(current, ret);
 		}
 		inc_syscw(current);
+        /*a4.释放锁*/
 		file_end_write(file);
 	}
 
@@ -588,8 +600,11 @@ SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
 	ssize_t ret = -EBADF;
 
 	if (f.file) {
+         /*a1. 获取file上一次操作结束位置(即这一次操作起点)*/
 		loff_t pos = file_pos_read(f.file);
+        /*a2. 写文件*/
 		ret = vfs_write(f.file, buf, count, &pos);
+        /*a3. 更新操作位置*/
 		if (ret >= 0)
 			file_pos_write(f.file, pos);
 		fdput_pos(f);
