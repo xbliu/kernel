@@ -1480,9 +1480,10 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
 	struct file *file = NULL;
 	unsigned long retval;
 
+    /*a1.非MAP_ANONYMOUS(file mapping)与MAP_HUGETLB(huge page mapping)映射的前期准备*/
 	if (!(flags & MAP_ANONYMOUS)) {
 		audit_mmap_fd(fd, flags);
-		file = fget(fd);
+		file = fget(fd); //根椐fd获取文件描述符(struct file)
 		if (!file)
 			return -EBADF;
 		if (is_file_hugepages(file))
@@ -1508,13 +1509,14 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
 		file = hugetlb_file_setup(HUGETLB_ANON_FILE, len,
 				VM_NORESERVE,
 				&user, HUGETLB_ANONHUGE_INODE,
-				(flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK);
+				(flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK); //获取anon_hugepage的文件描述符
 		if (IS_ERR(file))
 			return PTR_ERR(file);
 	}
 
 	flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
 
+    /*a2.文件映射*/
 	retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);
 out_fput:
 	if (file)

@@ -183,16 +183,20 @@ SYSCALL_DEFINE1(syncfs, int, fd)
  */
 int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
 {
+    /*a1.获取file的inode*/
 	struct inode *inode = file->f_mapping->host;
 
 	if (!file->f_op->fsync)
 		return -EINVAL;
+    /*a2.同步数据与元数据,I_DIRTY_TIME表示inode的时间被修改了*/
 	if (!datasync && (inode->i_state & I_DIRTY_TIME)) {
 		spin_lock(&inode->i_lock);
 		inode->i_state &= ~I_DIRTY_TIME;
 		spin_unlock(&inode->i_lock);
+        /*标记inode是dirty,以便回写*/
 		mark_inode_dirty_sync(inode);
 	}
+    /*a2.具体文件系统的同步操作*/
 	return file->f_op->fsync(file, start, end, datasync);
 }
 EXPORT_SYMBOL(vfs_fsync_range);
@@ -205,6 +209,7 @@ EXPORT_SYMBOL(vfs_fsync_range);
  * Write back data and metadata for @file to disk.  If @datasync is
  * set only metadata needed to access modified file data is written.
  */
+/*磁盘文件包含数据(文件内容)与元数据(文件的属性)两部分,同步即是将这些修改了的数据从内存写入到磁盘*/
 int vfs_fsync(struct file *file, int datasync)
 {
 	return vfs_fsync_range(file, 0, LLONG_MAX, datasync);
@@ -213,9 +218,11 @@ EXPORT_SYMBOL(vfs_fsync);
 
 static int do_fsync(unsigned int fd, int datasync)
 {
+    /*a1.fd转内核struct fd*/
 	struct fd f = fdget(fd);
 	int ret = -EBADF;
 
+    /*a2.同步文件*/
 	if (f.file) {
 		ret = vfs_fsync(f.file, datasync);
 		fdput(f);
