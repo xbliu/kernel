@@ -1553,15 +1553,18 @@ static struct dentry *lookup_real(struct inode *dir, struct dentry *dentry,
 static struct dentry *__lookup_hash(const struct qstr *name,
 		struct dentry *base, unsigned int flags)
 {
+    /*a1.dcache中查找dntry*/
 	struct dentry *dentry = lookup_dcache(name, base, flags);
 
 	if (dentry)
 		return dentry;
 
+    /*a2.未找到对应的dentry,根椐父dentry与name分配一个*/
 	dentry = d_alloc(base, name);
 	if (unlikely(!dentry))
 		return ERR_PTR(-ENOMEM);
 
+    /*a3.根椐父dentry的inode查询是否存在该dentry(即父目录是否已存在该项)*/
 	return lookup_real(base->d_inode, dentry, flags);
 }
 
@@ -2080,6 +2083,7 @@ static inline u64 hash_name(const void *salt, const char *name)
 	unsigned long len = 0, c;
 
 	c = (unsigned char)*name;
+    /*以'/'为结尾复制字符串*/
 	do {
 		len++;
 		hash = partial_name_hash(c, hash);
@@ -2125,7 +2129,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 		err = may_lookup(nd);
 		if (err)
 			return err;
-
+        /*以'/'为终止获取路径分量*/
 		hash_len = hash_name(nd->path.dentry, name);
 
         /*
@@ -2143,7 +2147,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			case 2:
 				if (name[1] == '.') {
 					type = LAST_DOTDOT;
-					nd->flags |= LOOKUP_JUMPED;
+					nd->flags |= LOOKUP_JUMPED; //标记可以跳转(上一级)
 				}
 				break;
 			case 1:
@@ -2473,18 +2477,22 @@ static int filename_lookup(int dfd, struct filename *name, unsigned flags,
 static int path_parentat(struct nameidata *nd, unsigned flags,
 				struct path *parent)
 {
+    /*a1.设置路径的起点*/
 	const char *s = path_init(nd, flags);
 	int err;
 	if (IS_ERR(s))
 		return PTR_ERR(s);
+    /*a2. 解析路径*/
 	err = link_path_walk(s, nd);
+    /*a3.完成路径解析*/
 	if (!err)
-		err = complete_walk(nd);
+		err = complete_walk(nd); //验证dentry的合法性
 	if (!err) {
 		*parent = nd->path;
 		nd->path.mnt = NULL;
 		nd->path.dentry = NULL;
 	}
+    /*a4.结束路径解析*/
 	terminate_walk(nd);
 	return err;
 }
@@ -2498,7 +2506,9 @@ static struct filename *filename_parentat(int dfd, struct filename *name,
 
 	if (IS_ERR(name))
 		return name;
+    /*a1.设置nameidata:存储查询信息*/
 	set_nameidata(&nd, dfd, name);
+    /*a2.打开父目录:父目录dentry inode查询*/
 	retval = path_parentat(&nd, flags | LOOKUP_RCU, parent);
 	if (unlikely(retval == -ECHILD))
 		retval = path_parentat(&nd, flags, parent);
@@ -2512,6 +2522,7 @@ static struct filename *filename_parentat(int dfd, struct filename *name,
 		putname(name);
 		name = ERR_PTR(retval);
 	}
+    /*a3.恢复nameidata*/
 	restore_nameidata();
 	return name;
 }
@@ -3761,7 +3772,7 @@ static struct dentry *filename_create(int dfd, struct filename *name,
 	 * other flags passed in are ignored!
 	 */
 	lookup_flags &= LOOKUP_REVAL;
-
+    /*a1.打开父路径(父路径查询)*/
 	name = filename_parentat(dfd, name, lookup_flags, path, &last, &type);
 	if (IS_ERR(name))
 		return ERR_CAST(name);
@@ -3770,6 +3781,7 @@ static struct dentry *filename_create(int dfd, struct filename *name,
 	 * Yucky last component or no last component at all?
 	 * (foo/., foo/.., /////)
 	 */
+    /*a2.最后一项是当前目录(.) 上一级目录(..) 不做处理*/
 	if (unlikely(type != LAST_NORM))
 		goto out;
 
@@ -3780,6 +3792,7 @@ static struct dentry *filename_create(int dfd, struct filename *name,
 	 */
 	lookup_flags |= LOOKUP_CREATE | LOOKUP_EXCL;
 	inode_lock_nested(path->dentry->d_inode, I_MUTEX_PARENT);
+    /*a3.尾项查找dentry*/
 	dentry = __lookup_hash(&last, path->dentry, lookup_flags);
 	if (IS_ERR(dentry))
 		goto unlock;
@@ -3794,6 +3807,7 @@ static struct dentry *filename_create(int dfd, struct filename *name,
 	 * all is fine. Let's be bastards - you had / on the end, you've
 	 * been asking for (non-existent) directory. -ENOENT for you.
 	 */
+    /*a4.尾项由n(>=1)个分隔符(/)组成<即无最后项> 不能创建*/
 	if (unlikely(!is_dir && last.name[last.len])) {
 		error = -ENOENT;
 		goto fail;
@@ -3950,11 +3964,12 @@ int vfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	error = security_inode_mkdir(dir, dentry, mode);
 	if (error)
 		return error;
-
+    /*a1.检测是否到达链接数上限*/
 	if (max_links && dir->i_nlink >= max_links)
 		return -EMLINK;
-
+    /*a2.具体的文件系统创建目录*/
 	error = dir->i_op->mkdir(dir, dentry, mode);
+    /*a3.通知目录已创建*/
 	if (!error)
 		fsnotify_mkdir(dir, dentry);
 	return error;
@@ -3969,6 +3984,7 @@ SYSCALL_DEFINE3(mkdirat, int, dfd, const char __user *, pathname, umode_t, mode)
 	unsigned int lookup_flags = LOOKUP_DIRECTORY;
 
 retry:
+    /*a1.创建目录项*/
 	dentry = user_path_create(dfd, pathname, &path, lookup_flags);
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
@@ -3976,8 +3992,10 @@ retry:
 	if (!IS_POSIXACL(path.dentry->d_inode))
 		mode &= ~current_umask();
 	error = security_path_mkdir(&path, dentry, mode);
+    /*a2.创建inode*/
 	if (!error)
 		error = vfs_mkdir(path.dentry->d_inode, dentry, mode);
+    /*a3.完成创建*/
 	done_path_create(&path, dentry);
 	if (retry_estale(error, lookup_flags)) {
 		lookup_flags |= LOOKUP_REVAL;
@@ -3993,6 +4011,7 @@ SYSCALL_DEFINE2(mkdir, const char __user *, pathname, umode_t, mode)
 
 int vfs_rmdir(struct inode *dir, struct dentry *dentry)
 {
+    /*a1.检测是否可以删除*/
 	int error = may_delete(dir, dentry, 1);
 
 	if (error)
@@ -4005,18 +4024,22 @@ int vfs_rmdir(struct inode *dir, struct dentry *dentry)
 	inode_lock(dentry->d_inode);
 
 	error = -EBUSY;
-	if (is_local_mountpoint(dentry))
+    /*a2.dentry是当前文件系统的挂载点(mountpiont)则不能删除*/
+    if (is_local_mountpoint(dentry))
 		goto out;
 
 	error = security_inode_rmdir(dir, dentry);
 	if (error)
 		goto out;
 
+    /*a3.回收该dentry下的子dentry*/
 	shrink_dcache_parent(dentry);
+    /*a4.调用具体文件系统的删除目录操作*/
 	error = dir->i_op->rmdir(dir, dentry);
 	if (error)
 		goto out;
 
+    /*a5.标记dentry失效,不能作为mountpoint,detach mountpoint*/
 	dentry->d_inode->i_flags |= S_DEAD;
 	dont_mount(dentry);
 	detach_mounts(dentry);
@@ -4040,11 +4063,13 @@ static long do_rmdir(int dfd, const char __user *pathname)
 	int type;
 	unsigned int lookup_flags = 0;
 retry:
+    /*a1.打开父目录(获取父目录的dentry和与之对应的inode)*/
 	name = filename_parentat(dfd, getname(pathname), lookup_flags,
 				&path, &last, &type);
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 
+    /*a2.父目录项类型是'.' '..' 根目录('/')不能删除 ???*/
 	switch (type) {
 	case LAST_DOTDOT:
 		error = -ENOTEMPTY;
@@ -4062,6 +4087,7 @@ retry:
 		goto exit1;
 
 	inode_lock_nested(path.dentry->d_inode, I_MUTEX_PARENT);
+    /*a3.查找最一个路径分量的dentry*/
 	dentry = __lookup_hash(&last, path.dentry, lookup_flags);
 	error = PTR_ERR(dentry);
 	if (IS_ERR(dentry))
@@ -4073,6 +4099,7 @@ retry:
 	error = security_path_rmdir(&path, dentry);
 	if (error)
 		goto exit3;
+    /*a4.从父目录中删除该项*/
 	error = vfs_rmdir(path.dentry->d_inode, dentry);
 exit3:
 	dput(dentry);

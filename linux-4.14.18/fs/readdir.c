@@ -24,7 +24,8 @@
 #include <linux/uaccess.h>
 
 int iterate_dir(struct file *file, struct dir_context *ctx)
-{
+{   
+    /*a1.获取文件inode*/
 	struct inode *inode = file_inode(file);
 	bool shared = false;
 	int res = -ENOTDIR;
@@ -37,6 +38,7 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 	if (res)
 		goto out;
 
+    /*a2.上锁 为什么上锁??? 避免与rmdir产生竞争.*/
 	if (shared) {
 		inode_lock_shared(inode);
 	} else {
@@ -45,6 +47,7 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 			goto out;
 	}
 
+    /*a3.call f_op->iterate/f_op->iterate_shared 具体的文件系统迭代操作*/
 	res = -ENOENT;
 	if (!IS_DEADDIR(inode)) {
 		ctx->pos = file->f_pos;
@@ -224,11 +227,11 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 
 	if (!access_ok(VERIFY_WRITE, dirent, count))
 		return -EFAULT;
-
+    /*a1.获取struct fd,为什么不直接获取struct file呢 ???*/
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
-
+    /*a2.迭代读取目录*/
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
