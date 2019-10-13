@@ -1331,7 +1331,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 	if (!len)
 		return -EINVAL;
-
+	
+	/*a1.权限参数处理、长度页对齐、map_count检查*/
 	/*
 	 * Does the application expect PROT_READ to imply PROT_EXEC?
 	 *
@@ -1361,6 +1362,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	/* Obtain the address to map to. we verify (or select) it and ensure
 	 * that it represents a valid section of the address space.
 	 */
+	 /*a2.获取可用于映射的地址(虚拟内存地址)*/
 	addr = get_unmapped_area(file, addr, len, pgoff, flags);
 	if (offset_in_page(addr))
 		return addr;
@@ -1384,7 +1386,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 	if (mlock_future_check(mm, vm_flags, len))
 		return -EAGAIN;
-
+	
+	/*a4.文件映射与读写权限检查*/
 	if (file) {
 		struct inode *inode = file_inode(file);
 
@@ -1464,7 +1467,8 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		if (file && is_file_hugepages(file))
 			vm_flags |= VM_NORESERVE;
 	}
-
+	
+	/*a5.执行映射动作*/
 	addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
 	if (!IS_ERR_VALUE(addr) &&
 	    ((vm_flags & VM_LOCKED) ||
@@ -1612,6 +1616,9 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	struct rb_node **rb_link, *rb_parent;
 	unsigned long charged = 0;
 
+	/*
+	a1.不能超过地址空间的限制,
+	若超则统计是否与其它映射是否有重叠,若有则需要的总pages并没有那么多*/
 	/* Check against address space limit. */
 	if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT)) {
 		unsigned long nr_pages;
@@ -1627,6 +1634,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 			return -ENOMEM;
 	}
 
+	/*a2.释放与之交叉重叠区域的映射 ???(这样的话哪上一个映射不是被废掉了吗)*/
 	/* Clear old maps */
 	while (find_vma_links(mm, addr, addr + len, &prev, &rb_link,
 			      &rb_parent)) {
@@ -1644,6 +1652,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		vm_flags |= VM_ACCOUNT;
 	}
 
+	/*a3.与旧的mapping尝试合并 ???这样有什么好处*/
 	/*
 	 * Can we just expand an old mapping?
 	 */
@@ -1652,6 +1661,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	if (vma)
 		goto out;
 
+	/*a4.分配一个vm_area_struct,记录地址等信息*/
 	/*
 	 * Determine the object being mapped and call the appropriate
 	 * specific mapper. the address has already been validated, but
@@ -1671,6 +1681,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	vma->vm_pgoff = pgoff;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 
+	/*a4.文件映射与共享映射的私有处理*/
 	if (file) {
 		if (vm_flags & VM_DENYWRITE) {
 			error = deny_write_access(file);
@@ -1689,6 +1700,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		 * new file must not have been exposed to user-space, yet.
 		 */
 		vma->vm_file = get_file(file);
+		/*b1.调用具体文件系统的mapping*/
 		error = call_mmap(file, vma);
 		if (error)
 			goto unmap_and_free_vma;
@@ -1705,11 +1717,13 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		addr = vma->vm_start;
 		vm_flags = vma->vm_flags;
 	} else if (vm_flags & VM_SHARED) {
+		/*b1.设置匿名映射(dev/zero)*/
 		error = shmem_zero_setup(vma);
 		if (error)
 			goto free_vma;
 	}
 
+	/*a5.加入到rb tree中进行管理*/
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 	/* Once vma denies write, undo our temporary denial count */
 	if (file) {
@@ -2080,11 +2094,19 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 	unsigned long error = arch_mmap_check(addr, len, flags);
 	if (error)
 		return error;
-
+	/*
+	a1.大小不能超过用户空间的大小
+	(32位系统将虚拟空间划分为用户空间与内核空间,一般来说是3:1即3G:1G.PAGE_OFFSET值就是分隔线)
+	*/
 	/* Careful about overflows.. */
 	if (len > TASK_SIZE)
 		return -ENOMEM;
 
+	/*
+	a1.get_area函数赋值:
+	1)默认是当前进程的get_unmapped_area
+	2)若是文件映射则f_op->get_unmapped_area,共享映射则shmem_get_unmapped_area(最终还是调用默认选择)
+	*/
 	get_area = current->mm->get_unmapped_area;
 	if (file) {
 		if (file->f_op->get_unmapped_area)
@@ -2099,6 +2121,7 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 		get_area = shmem_get_unmapped_area;
 	}
 
+	/*a3.获取映射地址*/
 	addr = get_area(file, addr, len, pgoff, flags);
 	if (IS_ERR_VALUE(addr))
 		return addr;
