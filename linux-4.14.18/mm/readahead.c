@@ -186,7 +186,7 @@ int __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 			break;
 		page->index = page_offset;
 		list_add(&page->lru, &page_pool);
-		if (page_idx == nr_to_read - lookahead_size)
+		if (page_idx == nr_to_read - lookahead_size) //设置请求尾页为预读
 			SetPageReadahead(page);
 		ret++;
 	}

@@ -602,9 +602,9 @@ struct inode {
 	};
 	dev_t			i_rdev;
 	loff_t			i_size;
-	struct timespec		i_atime;
-	struct timespec		i_mtime;
-	struct timespec		i_ctime;
+	struct timespec		i_atime; //文件最后访问的时间
+	struct timespec		i_mtime; //文件最后修改的时间
+	struct timespec		i_ctime; //结点最后修改的时间
 	spinlock_t		i_lock;	/* i_blocks, i_bytes, maybe i_size */
 	unsigned short          i_bytes;
 	unsigned int		i_blkbits;

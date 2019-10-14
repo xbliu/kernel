@@ -3003,6 +3003,7 @@ ssize_t generic_perform_write(struct file *file,
 	ssize_t written = 0;
 	unsigned int flags = 0;
 
+    /*一个page一个page的写*/
 	do {
 		struct page *page;
 		unsigned long offset;	/* Offset into pagecache page */
@@ -3010,9 +3011,9 @@ ssize_t generic_perform_write(struct file *file,
 		size_t copied;		/* Bytes copied from user */
 		void *fsdata;
 
-		offset = (pos & (PAGE_SIZE - 1));
+		offset = (pos & (PAGE_SIZE - 1));//页内偏移
 		bytes = min_t(unsigned long, PAGE_SIZE - offset,
-						iov_iter_count(i));
+						iov_iter_count(i)); //确定写bytes不超过1页大小
 
 again:
 		/*
@@ -3030,22 +3031,26 @@ again:
 			break;
 		}
 
+        /*a3.信号中断到来写退出*/
 		if (fatal_signal_pending(current)) {
 			status = -EINTR;
 			break;
 		}
 
+        /*a4.调用a_ops->write_begin进行写前准备 用来从内存分配page???*/
 		status = a_ops->write_begin(file, mapping, pos, bytes, flags,
 						&page, &fsdata);
 		if (unlikely(status < 0))
 			break;
 
-		if (mapping_writably_mapped(mapping))
+		if (mapping_writably_mapped(mapping)) //???
 			flush_dcache_page(page);
 
+        /*a5.copy数据到page*/
 		copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
-		flush_dcache_page(page);
+		flush_dcache_page(page); //???
 
+        /*a6.写后处理*/
 		status = a_ops->write_end(file, mapping, pos, bytes, copied,
 						page, fsdata);
 		if (unlikely(status < 0))
@@ -3054,6 +3059,7 @@ again:
 
 		cond_resched();
 
+        /*a7.更新i->count、pos、written*/
 		iov_iter_advance(i, copied);
 		if (unlikely(copied == 0)) {
 			/*
@@ -3071,6 +3077,7 @@ again:
 		pos += copied;
 		written += copied;
 
+        /*a8.平衡脏页数目*/
 		balance_dirty_pages_ratelimited(mapping);
 	} while (iov_iter_count(i));
 
@@ -3106,15 +3113,19 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 	/* We can write back this queue in page reclaim */
 	current->backing_dev_info = inode_to_bdi(inode);
+
+    /*a1.移除file特定的权限 ???*/
 	err = file_remove_privs(file);
 	if (err)
 		goto out;
 
+    /*a2.更新文件的时间(访问、文件最后修改、结点最后修改)*/
 	err = file_update_time(file);
 	if (err)
 		goto out;
 
-	if (iocb->ki_flags & IOCB_DIRECT) {
+    /*a3.写处理*/
+	if (iocb->ki_flags & IOCB_DIRECT) { //直接写
 		loff_t pos, endbyte;
 
 		written = generic_file_direct_write(iocb, from);
@@ -3159,7 +3170,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			 * the number of bytes which were direct-written
 			 */
 		}
-	} else {
+	} else { //缓存写
 		written = generic_perform_write(file, from, iocb->ki_pos);
 		if (likely(written > 0))
 			iocb->ki_pos += written;
