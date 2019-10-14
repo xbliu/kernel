@@ -735,7 +735,8 @@ static int do_dentry_open(struct file *f,
 	/* POSIX.1-2008/SUSv4 Section XSI 2.9.7 */
 	if (S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode))
 		f->f_mode |= FMODE_ATOMIC_POS;
-
+    
+    /*a2.获取文件的操作(即f->f_op指向inode->i_fop)*/
 	f->f_op = fops_get(inode->i_fop);
 	if (unlikely(WARN_ON(!f->f_op))) {
 		error = -ENODEV;
@@ -752,7 +753,7 @@ static int do_dentry_open(struct file *f,
 
 	if (!open)
 		open = f->f_op->open;
-    /*a2.调用具体文件系统的open*/
+    /*a3.调用具体文件系统的open*/
 	if (open) {
 		error = open(inode, f);
 		if (error)
@@ -766,7 +767,20 @@ static int do_dentry_open(struct file *f,
 	if ((f->f_mode & FMODE_WRITE) &&
 	     likely(f->f_op->write || f->f_op->write_iter))
 		f->f_mode |= FMODE_CAN_WRITE;
-
+    /*
+    write_int:描述数据的更新频率, 
+    即按照数据更新频率分为SHORT(更新频率高),MEDIUM(生命周期比SHORT长),LONG(生命周期比MEDIUM长),EXTREME(生命周期比LONG长). 
+        SSD有一个写放大的问题:flash擦除的单位是block,写入单位是page,一个block中包含多个page.但是写入之前必须擦除.
+    由于擦除相对耗时,故在对某个page进行修改操作时,通常将修改过的数据写入新的已擦除的block.之前的block变为invalid. 
+    之后SSD FTL会对invalid的block进行垃圾回收,垃圾回收时会对block中invalid page进行额外的拷贝操作.
+    从而使得设备实际执行的IO数量大于用户提交的IO数量,这一特性称为写放大(Write Amplification). 
+        这个问题的根源在于两种不同生命周期(lifetime)的数据存储在同一个block中,
+    假设block存在两类数据:hot data与cold data.hot data频繁更新,势必会导致额外的copy有效的clod data. 
+    但是若将不同的更新频率的数据写入不同的block,即将相近频率数据写入同一block,
+    从而尽可能地减小garbage collection中引入的额外的数据拷贝操作,从而提高SSD的有效生命周期,并提升写性能.
+        1)write_hint配合SSD FTL支持multi-stream特性(操作系统可以将写入的数据与某个stream相绑定),有助于设备耐久性,并提高性能.
+        2)软件缓存解决方案可以更明智地决定如何以及在哪里放置数据.
+    */ 
 	f->f_write_hint = WRITE_LIFE_NOT_SET;
 	f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
 

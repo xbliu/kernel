@@ -380,7 +380,7 @@ static int try_context_readahead(struct address_space *mapping,
 ***3.触发预读页
 ***4.req_size大于最大预读页数 或者上一次读的位置跟这次读的位置相差一页大小
 ***5.offset前缓存的历史页大于req_size
-***b.不满足以上情况预读窗口不调整,进行随机读
+***6.不满足以上情况预读窗口不调整,进行随机读
 ***
 */
 static unsigned long
@@ -390,19 +390,27 @@ ondemand_readahead(struct address_space *mapping,
 		   unsigned long req_size)
 {
 	struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
-	unsigned long max_pages = ra->ra_pages;
+	unsigned long max_pages = ra->ra_pages; //预读的最大页数
 	pgoff_t prev_offset;
 
 	/*
 	 * If the request exceeds the readahead window, allow the read to
 	 * be up to the optimal hardware IO size
 	 */
+    /* 
+    a1.设置最大可读页数 
+    {io_pages<硬件IO size> req_size<本次读写页数> ra_pages(最大的预读窗口大小) 
+       1)io_pages req_size都大于ra_pages时,取两者中最小
+       2)其它情况ra_pages
+    }
+    */
 	if (req_size > max_pages && bdi->io_pages > max_pages)
 		max_pages = min(req_size, bdi->io_pages);
 
 	/*
 	 * start of file
 	 */
+    /*a2.从文件头开始读*/
 	if (!offset)
 		goto initial_readahead;
 
@@ -410,10 +418,14 @@ ondemand_readahead(struct address_space *mapping,
 	 * It's the expected callback offset, assume sequential access.
 	 * Ramp up sizes, and push forward the readahead window.
 	 */
+    /*a3.顺序读
+      1)从上一次请求的最后一页<已提前预读了一些页>
+      2)从上一次读取的最后一页开始读<上一次预读的末尾>
+      */
 	if ((offset == (ra->start + ra->size - ra->async_size) ||
 	     offset == (ra->start + ra->size))) {
-		ra->start += ra->size;
-		ra->size = get_next_ra_size(ra, max_pages);
+		ra->start += ra->size; //本次预读开始位置(上一次预读结束位置)
+		ra->size = get_next_ra_size(ra, max_pages); //本次预读窗口的大小
 		ra->async_size = ra->size;
 		goto readit;
 	}
@@ -424,16 +436,25 @@ ondemand_readahead(struct address_space *mapping,
 	 * Query the pagecache for async_size, which normally equals to
 	 * readahead size. Ramp it up and use it as the new readahead size.
 	 */
+    /*a4.触发预读页*/
 	if (hit_readahead_marker) {
 		pgoff_t start;
 
 		rcu_read_lock();
+        /*b1.找到不存在项的最低索引在[offset+1,min(index+max_pages-1, MAX_INDEX)]*/
 		start = page_cache_next_hole(mapping, offset + 1, max_pages);
 		rcu_read_unlock();
 
+        /*b2.缓存中没有一页是包含读取的内容,直接返回. ???(返回后如何操作)
+          start==0 index出现罕见溢出的情况*/
 		if (!start || start - offset > max_pages)
 			return 0;
 
+        /*
+        b3.设置命中预读自触发 
+            假设上一次预读窗口为已缓存页+本次req_size,计算本次预读窗口大小
+            ???(到底是针对哪一种情况 interleaved reads?)
+        */
 		ra->start = start;
 		ra->size = start - offset;	/* old async_size */
 		ra->size += req_size;
@@ -443,8 +464,9 @@ ondemand_readahead(struct address_space *mapping,
 	}
 
 	/*
-	 * oversize read
+	 * oversize reads
 	 */
+    /*a5.req_size大于最大预读页数:不是顺序读且没有触发命中预读,大容量读取(大量的读取很可也是顺序读)*/
 	if (req_size > max_pages)
 		goto initial_readahead;
 
@@ -453,6 +475,7 @@ ondemand_readahead(struct address_space *mapping,
 	 * trivial case: (offset - prev_offset) == 1
 	 * unaligned reads: (offset - prev_offset) == 0
 	 */
+    /*a6.上一次读的位置跟这次读的位置相差一页大小,预读成功能机率很大*/
 	prev_offset = (unsigned long long)ra->prev_pos >> PAGE_SHIFT;
 	if (offset - prev_offset <= 1UL)
 		goto initial_readahead;
@@ -461,6 +484,7 @@ ondemand_readahead(struct address_space *mapping,
 	 * Query the page cache and look for the traces(cached history pages)
 	 * that a sequential stream would leave behind.
 	 */
+    /*a7.向前查找page cache(历史页),连续缓存的页数大于req_size则进行预读*/
 	if (try_context_readahead(mapping, ra, offset, req_size, max_pages))
 		goto readit;
 
@@ -468,9 +492,17 @@ ondemand_readahead(struct address_space *mapping,
 	 * standalone, small random read
 	 * Read as is, and do not pollute the readahead state.
 	 */
+    /*a8.不满足以上情况预读窗口不调整,进行随机读*/
 	return __do_page_cache_readahead(mapping, filp, offset, req_size, 0);
 
 initial_readahead:
+    /*
+    初始化预读:预读窗口大小,异步预读大小设置
+        必定有ra->size>=req_size,由get_init_ra_size保证.
+        a.ra->size==req_size则ra->async_size=ra->size,设置命中预读的触发<看readit部分>,需要再多读一些.
+        b.ra->size>req_size则ra->size一定是req_size的多倍(get_init_ra_size保证),
+        此时异步预读的已包含在其中.
+    */
 	ra->start = offset;
 	ra->size = get_init_ra_size(req_size, max_pages);
 	ra->async_size = ra->size > req_size ? ra->size - req_size : ra->size;
@@ -481,6 +513,9 @@ readit:
 	 * If so, trigger the readahead marker hit now, and merge
 	 * the resulted next readahead window into the current one.
 	 */
+    /*
+        命中触发由本射触发,继续扩大预读窗口
+    */
 	if (offset == ra->start && ra->size == ra->async_size) {
 		ra->async_size = get_next_ra_size(ra, max_pages);
 		ra->size += ra->async_size;

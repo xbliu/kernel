@@ -1497,7 +1497,16 @@ struct inode *ext2_iget (struct super_block *sb, unsigned long ino)
 	 */
 	for (n = 0; n < EXT2_N_BLOCKS; n++)
 		ei->i_data[n] = raw_inode->i_block[n];
-
+    /*
+    索引节点有四类inode operations: 
+        1)普通文件i_op
+        2)目录文件i_op
+        3)链接文件i_op
+        4)特殊文件i_op
+    有两类file operations: 
+        1)普通文件的i_fop
+        2)目录文件的i_fop
+    */
 	if (S_ISREG(inode->i_mode)) {
 		inode->i_op = &ext2_file_inode_operations;
 		if (test_opt(inode->i_sb, NOBH)) {

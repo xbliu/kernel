@@ -1955,6 +1955,7 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 		return 0;
 	iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
 
+    /*a1.计算逻辑页索引与页内偏移*/
 	index = *ppos >> PAGE_SHIFT; /*此次读取的第一页索引*/
 	prev_index = ra->prev_pos >> PAGE_SHIFT; /*上一次读取的页索引*/
 	prev_offset = ra->prev_pos & (PAGE_SIZE-1); /*上一次的页内偏移*/
@@ -1974,6 +1975,7 @@ find_page:
 			goto out;
 		}
 
+        /*a2.从缓存页中读取内容若无则同步预读*/
 		page = find_get_page(mapping, index); /*从radix树中查找缓存页*/
 		if (!page) { /*缓存中无则同步预读*/
 			if (iocb->ki_flags & IOCB_NOWAIT)
@@ -1985,11 +1987,15 @@ find_page:
 			if (unlikely(page == NULL))
 				goto no_cached_page;
 		}
+
+        /*a3.为下一次进行预读*/
 		if (PageReadahead(page)) { /*页内含有预读标志则异步预读*/
 			page_cache_async_readahead(mapping,
 					ra, filp, page,
 					index, last_index - index);
 		}
+
+        /*a4.等待数据更新到内存*/
 		if (!PageUptodate(page)) { /*若数据未从磁盘更新到内存,则等待其更新完毕*/
 			if (iocb->ki_flags & IOCB_NOWAIT) {
 				put_page(page);
@@ -2066,6 +2072,7 @@ page_ok:
 			mark_page_accessed(page);
 		prev_index = index;
 
+        /*a5.拷贝数据到用户缓存*/
 		/*
 		 * Ok, we have the page, and it's up-to-date, so
 		 * now we can copy it to user space...
@@ -2079,7 +2086,8 @@ page_ok:
 
 		put_page(page);
 		written += ret;
-		if (!iov_iter_count(iter))
+        /*a6.所有数据读取完成,正常退出循环*/
+		if (!iov_iter_count(iter)) //copy_page_to_iter中此值会减去成功复制的数目
 			goto out;
 		if (ret < nr) {
 			error = -EFAULT;
@@ -2113,6 +2121,7 @@ readpage:
 		 * failures, eg. multipath errors.
 		 * PG_error will be set again if readpage fails.
 		 */
+        /*a2.2 同步读失败,no page cache,重新分配page,并重新读取文件*/
 		ClearPageError(page);
 		/* Start the actual read. The read will unlock the page. */
 		error = mapping->a_ops->readpage(filp, page);
@@ -2180,7 +2189,9 @@ no_cached_page:
 would_block:
 	error = -EAGAIN;
 out:
-	/*更新预读上一次位置,以便检测下一次是否进行预读*/
+    /* 
+    a7.更新上一次读取位置,以便检测下一次是否进行预读
+    */
 	ra->prev_pos = prev_index;
 	ra->prev_pos <<= PAGE_SHIFT;
 	ra->prev_pos |= prev_offset;
@@ -2206,7 +2217,7 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 	if (!count)
 		goto out; /* skip atime */
-
+    /*a1.直接读处理*/
 	if (iocb->ki_flags & IOCB_DIRECT) {
 		struct file *file = iocb->ki_filp;
 		struct address_space *mapping = file->f_mapping;
@@ -2249,6 +2260,7 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 			goto out;
 	}
 
+    /*a2.缓存读*/
 	retval = generic_file_buffered_read(iocb, iter, retval);
 out:
 	return retval;

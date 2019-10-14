@@ -2139,6 +2139,12 @@ EXPORT_SYMBOL(dquot_operations);
 /*
  * Generic helper for ->open on filesystems supporting disk quotas.
  */
+/*
+    disk quotas:磁盘配额,规定磁盘使用量(磁盘空间及文件个数).
+        block<表示规定用户可以使用的磁盘空间大小>
+        inodes<表示规定用户可以创建的文件个数>
+        soft/hard单位是KB/个数,soft为警告值，hard为最大值.到达soft发出警告,警告期限达禁止使用.
+*/
 int dquot_file_open(struct inode *inode, struct file *file)
 {
 	int error;
