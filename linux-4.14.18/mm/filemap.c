@@ -1439,12 +1439,14 @@ struct page *pagecache_get_page(struct address_space *mapping, pgoff_t offset,
 	struct page *page;
 
 repeat:
+	/*a1.从address space中获取page cache,并检测是否异常*/
 	page = find_get_entry(mapping, offset);
 	if (radix_tree_exceptional_entry(page))
 		page = NULL;
 	if (!page)
 		goto no_page;
 
+	/*a2.lock page且检查page是否被truncated*/
 	if (fgp_flags & FGP_LOCK) {
 		if (fgp_flags & FGP_NOWAIT) {
 			if (!trylock_page(page)) {
@@ -1468,6 +1470,7 @@ repeat:
 		mark_page_accessed(page);
 
 no_page:
+	/*a1.1page cache中未找到page,重新创建page*/
 	if (!page && (fgp_flags & FGP_CREAT)) {
 		int err;
 		if ((fgp_flags & FGP_WRITE) && mapping_cap_account_dirty(mapping))
@@ -1475,6 +1478,7 @@ no_page:
 		if (fgp_flags & FGP_NOFS)
 			gfp_mask &= ~__GFP_FS;
 
+		/*b1.分配page*/
 		page = __page_cache_alloc(gfp_mask);
 		if (!page)
 			return NULL;
@@ -1486,6 +1490,7 @@ no_page:
 		if (fgp_flags & FGP_ACCESSED)
 			__SetPageReferenced(page);
 
+		/*b2.将page 加入到address space的tree中*/
 		err = add_to_page_cache_lru(page, mapping, offset,
 				gfp_mask & GFP_RECLAIM_MASK);
 		if (unlikely(err)) {
@@ -2984,9 +2989,11 @@ struct page *grab_cache_page_write_begin(struct address_space *mapping,
 
 	if (flags & AOP_FLAG_NOFS)
 		fgp_flags |= FGP_NOFS;
-
+	/*a1.从page cache中查找page或者新建一个page*/
 	page = pagecache_get_page(mapping, index, fgp_flags,
 			mapping_gfp_mask(mapping));
+	
+	/*a2.等待page writeback完成*/
 	if (page)
 		wait_for_stable_page(page);
 
