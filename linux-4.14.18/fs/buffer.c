@@ -2001,13 +2001,16 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 	BUG_ON(from > PAGE_SIZE);
 	BUG_ON(to > PAGE_SIZE);
 	BUG_ON(from > to);
-
+    
+    /*a1.获取与page关联buffer_head (无则创建有则直接返回)*/
 	head = create_page_buffers(page, inode, 0);
 	blocksize = head->b_size;
 	bbits = block_size_bits(blocksize);
 
+    /*a2.page index转换成逻辑块索引*/
 	block = (sector_t)page->index << (PAGE_SHIFT - bbits);
 
+    /*a3.*/
 	for(bh = head, block_start = 0; bh != head || !block_start;
 	    block++, block_start=block_end, bh = bh->b_this_page) {
 		block_end = block_start + blocksize;
@@ -2128,10 +2131,12 @@ int block_write_begin(struct address_space *mapping, loff_t pos, unsigned len,
 	struct page *page;
 	int status;
 
+    /*a1.获取page cache*/
 	page = grab_cache_page_write_begin(mapping, index, flags);
 	if (!page)
 		return -ENOMEM;
 
+    /*a2.将page 与 block关联*/
 	status = __block_write_begin(page, pos, len, get_block);
 	if (unlikely(status)) {
 		unlock_page(page);
