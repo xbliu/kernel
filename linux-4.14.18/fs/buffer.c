@@ -2014,6 +2014,11 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 	for(bh = head, block_start = 0; bh != head || !block_start;
 	    block++, block_start=block_end, bh = bh->b_this_page) {
 		block_end = block_start + blocksize;
+		/*
+		b1.跳过不符合的block.
+			一个page包含多个block,假设page包含4个block(0,1,2,3),
+		若请示写在第2block,则0,1,3不符合要求.
+		*/
 		if (block_end <= from || block_start >= to) {
 			if (PageUptodate(page)) {
 				if (!buffer_uptodate(bh))
@@ -2021,8 +2026,10 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 			}
 			continue;
 		}
+		/*b2.清除BH_New标志,此标记IO已经映射buffer_head (iomap_to_bh)*/
 		if (buffer_new(bh))
 			clear_buffer_new(bh);
+		/*b3.buffer_head 需要关联映射到 io block*/
 		if (!buffer_mapped(bh)) {
 			WARN_ON(bh->b_size != blocksize);
 			if (get_block) {
@@ -2041,6 +2048,8 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 					mark_buffer_dirty(bh);
 					continue;
 				}
+				
+				/*要写的部分清0,[block_start,block_end]与[from,to]有交叉*/
 				if (block_end > to || block_start < from)
 					zero_user_segments(page,
 						to, block_end,
@@ -2048,11 +2057,13 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 				continue;
 			}
 		}
+		/*b4.跟page 同步状态*/
 		if (PageUptodate(page)) {
 			if (!buffer_uptodate(bh))
 				set_buffer_uptodate(bh);
 			continue; 
 		}
+		/*b5.发起读请求,[block_start,block_end]与[from,to]有交叉,未写的部分需要先同步到page*/
 		if (!buffer_uptodate(bh) && !buffer_delay(bh) &&
 		    !buffer_unwritten(bh) &&
 		     (block_start < from || block_end > to)) {
@@ -2063,11 +2074,13 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 	/*
 	 * If we issued read requests - let them complete.
 	 */
+	/*b6.等待读完成*/
 	while(wait_bh > wait) {
 		wait_on_buffer(*--wait_bh);
 		if (!buffer_uptodate(*wait_bh))
 			err = -EIO;
 	}
+	/*b7.page中[from,to]清0*/
 	if (unlikely(err))
 		page_zero_new_buffers(page, from, to);
 	return err;
@@ -2091,6 +2104,7 @@ static int __block_commit_write(struct inode *inode, struct page *page,
 	bh = head = page_buffers(page);
 	blocksize = bh->b_size;
 
+	/*a1.标记写的部分buffer_head为脏,若有[from,to]与[block_start,block_end]有交叉则为部分写*/
 	block_start = 0;
 	do {
 		block_end = block_start + blocksize;
@@ -2113,8 +2127,9 @@ static int __block_commit_write(struct inode *inode, struct page *page,
 	 * the next read(). Here we 'discover' whether the page went
 	 * uptodate as a result of this (potentially partial) write.
 	 */
+	 /*a2.部分写则磁盘数据并未全部同步到page上*/
 	if (!partial)
-		SetPageUptodate(page);
+		SetPageUptodate(page); //PG_Uptodate表示磁盘数据已同步到内存page上
 	return 0;
 }
 
@@ -2136,7 +2151,7 @@ int block_write_begin(struct address_space *mapping, loff_t pos, unsigned len,
 	if (!page)
 		return -ENOMEM;
 
-    /*a2.将page 与 block关联*/
+    /*a2.将page 与 block关联,并将block内未写的部分先同步到page*/
 	status = __block_write_begin(page, pos, len, get_block);
 	if (unlikely(status)) {
 		unlock_page(page);
@@ -2158,6 +2173,10 @@ int block_write_end(struct file *file, struct address_space *mapping,
 
 	start = pos & (PAGE_SIZE - 1);
 
+	/*
+	a1. copy失败,page的[start,len]内容清0,强制用户重新写入数据
+		要么完整的全写要么就不写(写策略)
+	*/
 	if (unlikely(copied < len)) {
 		/*
 		 * The buffers that were written will now be uptodate, so we
