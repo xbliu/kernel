@@ -1845,7 +1845,7 @@ static unsigned long get_nr_dirty_pages(void)
 
 static long wb_check_background_flush(struct bdi_writeback *wb)
 {
-	/*dirty pages达到一定阀值构造wb_writeback_work进行回写*/
+	/*a1.dirty pages达到一定阀值构造wb_writeback_work进行回写*/
 	if (wb_over_bg_thresh(wb)) {
 
 		struct wb_writeback_work work = {
@@ -1870,14 +1870,17 @@ static long wb_check_old_data_flush(struct bdi_writeback *wb)
 	/*
 	 * When set to zero, disable periodic writeback
 	 */
+    /*a1.周期性回写未开启*/
 	if (!dirty_writeback_interval)
 		return 0;
 
+    /*a2.周期性回写时间未到,不进行周期性回写*/
 	expired = wb->last_old_flush +
 			msecs_to_jiffies(dirty_writeback_interval * 10);
 	if (time_before(jiffies, expired))
 		return 0;
 
+    /*a3.周期性回写处理*/
 	wb->last_old_flush = jiffies;
 	nr_pages = get_nr_dirty_pages();
 	/*对于超过last_old_flush的dirty inode构造wb_writeback_work回写*/
@@ -1905,7 +1908,7 @@ static long wb_do_writeback(struct bdi_writeback *wb)
 	long wrote = 0;
 
 	set_bit(WB_writeback_running, &wb->state);
-	/*处理work list中wb_writeback_work*/
+	/*a1.处理work list中wb_writeback_work*/
 	while ((work = get_next_work_item(wb)) != NULL) {
 		trace_writeback_exec(wb, work);
 		wrote += wb_writeback(wb, work);
@@ -1915,8 +1918,9 @@ static long wb_do_writeback(struct bdi_writeback *wb)
 	/*
 	 * Check for periodic writeback, kupdated() style
 	 */
+    /*a2.检测周期性回写、后台脏页回写*/
 	wrote += wb_check_old_data_flush(wb); //周期性的回写 处理此刻起dirty_writeback_interval之前脏页
-	wrote += wb_check_background_flush(wb); //后台周期性的回写 所有脏页
+	wrote += wb_check_background_flush(wb); //后台回写 所有脏页
 	clear_bit(WB_writeback_running, &wb->state);
 
 	return wrote;
@@ -1933,8 +1937,9 @@ void wb_workfn(struct work_struct *work)
 	long pages_written;
 
 	set_worker_desc("flush-%s", dev_name(wb->bdi->dev));
-	current->flags |= PF_SWAPWRITE;
-        /*非紧急work queue 或者 未注册的bdi (backing device info) 一般情况下前者条件成功,这也是回写的正常路径
+	current->flags |= PF_SWAPWRITE; //此时为回写线程,可以交换内存到swap分区.
+    /* 
+    a1.1 非紧急work queue 或者 未注册的bdi (backing device info) 一般情况下前者条件成功,这也是回写的正常路径
 	*/
 	if (likely(!current_is_workqueue_rescuer() ||
 		   !test_bit(WB_registered, &wb->state))) {
@@ -1949,6 +1954,7 @@ void wb_workfn(struct work_struct *work)
 			trace_writeback_pages_written(pages_written);
 		} while (!list_empty(&wb->work_list));
 	} else {
+        /*a1.2 bdi_wq没有足够的workers(即线程池中没有多余空闲线程),减轻任务量*/
 		/*
 		 * bdi_wq can't get enough workers and we're running off
 		 * the emergency worker.  Don't hog it.  Hopefully, 1024 is
@@ -1959,6 +1965,10 @@ void wb_workfn(struct work_struct *work)
 		trace_writeback_pages_written(pages_written);
 	}
 
+    /*a2. 
+      1)后续又来了wb_writeback_work请求,继续处理
+      2)有脏数据,启动周期性回写
+    */
 	if (!list_empty(&wb->work_list))
 		mod_delayed_work(bdi_wq, &wb->dwork, 0);
 	else if (wb_has_dirty_io(wb) && dirty_writeback_interval)

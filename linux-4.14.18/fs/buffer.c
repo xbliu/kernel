@@ -2020,8 +2020,8 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 		若请示写在第2block,则0,1,3不符合要求.
 		*/
 		if (block_end <= from || block_start >= to) {
-			if (PageUptodate(page)) {
-				if (!buffer_uptodate(bh))
+			if (PageUptodate(page)) { //这一种什么情况下发生???
+				if (!buffer_uptodate(bh)) 
 					set_buffer_uptodate(bh);
 			}
 			continue;
