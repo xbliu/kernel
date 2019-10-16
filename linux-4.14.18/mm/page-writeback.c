@@ -99,6 +99,16 @@ unsigned long vm_dirty_bytes;
 /*
  * The interval between `kupdate'-style writebacks
  */
+ /*
+ * Periodic writeback of "old" data.
+ *
+ * Define "old": the first time one of an inode's pages is dirtied, we mark the
+ * dirtying-time in the inode's address_space.  So this periodic writeback code
+ * just walks the superblock inode list, writing back any inodes which are
+ * older than a specific point in time.
+ 以上来源于linux-2.5.12,其版本周期性回写函数为wb_kupdate.故有kupdate一说.
+ 另kupdate猜测是kernel thread update的意思.<pdflush启动kernel线程回写数据>
+*/
 unsigned int dirty_writeback_interval = 5 * 100; /* centiseconds */
 
 EXPORT_SYMBOL_GPL(dirty_writeback_interval);
