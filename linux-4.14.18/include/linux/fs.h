@@ -457,9 +457,9 @@ struct block_device {
  * Radix-tree tags, for tagging dirty and writeback pages within the pagecache
  * radix trees
  */
-#define PAGECACHE_TAG_DIRTY	0
-#define PAGECACHE_TAG_WRITEBACK	1
-#define PAGECACHE_TAG_TOWRITE	2
+#define PAGECACHE_TAG_DIRTY	0  //脏页
+#define PAGECACHE_TAG_WRITEBACK	1 //正在回写的页
+#define PAGECACHE_TAG_TOWRITE	2 //将要回写的页
 
 int mapping_tagged(struct address_space *mapping, int tag);
 

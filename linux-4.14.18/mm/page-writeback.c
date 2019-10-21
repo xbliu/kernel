@@ -2176,8 +2176,10 @@ int write_cache_pages(struct address_space *mapping,
 	int cycled;
 	int range_whole = 0;
 	int tag;
-
+    
+    /*a1.初始化struct pagevec:存储搜索页*/
 	pagevec_init(&pvec, 0);
+    /*a2.获取起始页的index(start),end范围*/
 	if (wbc->range_cyclic) {
 		writeback_index = mapping->writeback_index; /* prev offset */
 		index = writeback_index;
@@ -2193,22 +2195,28 @@ int write_cache_pages(struct address_space *mapping,
 			range_whole = 1;
 		cycled = 1; /* ignore range_cyclic tests */
 	}
+    /*
+    a3.获取要查找页的类型  
+    */
 	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
 		tag = PAGECACHE_TAG_TOWRITE;
 	else
 		tag = PAGECACHE_TAG_DIRTY;
 retry:
+    /*a4.将[index,end]范围内的脏页标记为PAGECACHE_TAG_TOWRITE,以便后续查找*/
 	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
 		tag_pages_for_writeback(mapping, index, end);
 	done_index = index;
+    /*a5.处理回写页*/
 	while (!done && (index <= end)) {
 		int i;
 
+        /*b1.从mapping radix tree中查找从index开始 标记为tag的 n个pages*/
 		nr_pages = pagevec_lookup_tag(&pvec, mapping, &index, tag,
 			      min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1);
 		if (nr_pages == 0)
 			break;
-
+        /*b2.处理查找到的符合条件的页*/
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
 
@@ -2219,7 +2227,8 @@ retry:
 			 * mapping. However, page->index will not change
 			 * because we have a reference on the page.
 			 */
-			if (page->index > end) {
+            /*c1.逻辑索引不符合条件 不再处理*/
+			if (page->index > end) { 
 				/*
 				 * can't be range_cyclic (1st pass) because
 				 * end == -1 in that case.
@@ -2246,11 +2255,13 @@ continue_unlock:
 				continue;
 			}
 
+            /*页不脏(无数据修改)无需处理*/
 			if (!PageDirty(page)) {
 				/* someone wrote it for us */
 				goto continue_unlock;
 			}
 
+            /*c2.页正在回写中*/
 			if (PageWriteback(page)) {
 				if (wbc->sync_mode != WB_SYNC_NONE)
 					wait_on_page_writeback(page);
@@ -2263,6 +2274,7 @@ continue_unlock:
 				goto continue_unlock;
 
 			trace_wbc_writepage(wbc, inode_to_bdi(mapping->host));
+            /*c3.回写页*/
 			ret = (*writepage)(page, wbc, data);
 			if (unlikely(ret)) {
 				if (ret == AOP_WRITEPAGE_ACTIVATE) {

@@ -84,10 +84,17 @@ struct writeback_control {
 
 	enum writeback_sync_modes sync_mode;
 
+    /*定期更新目的的回写任务*/
 	unsigned for_kupdate:1;		/* A kupdate writeback */
 	unsigned for_background:1;	/* A background writeback */
+    /*回写标记为PAGECACHE_TAG_TOWRITE的页*/
 	unsigned tagged_writepages:1;	/* tag-and-write to avoid livelock */
 	unsigned for_reclaim:1;		/* Invoked from the page allocator */
+    /*更新操作是逐个检查地址空间的页面,
+      当检查到最后一个时需要回绕到地址空间的起始位置从头再来
+      此时需要将该标志位置为1
+      (是否循环扫描inode的mapping address space)
+    */
 	unsigned range_cyclic:1;	/* range_start is cyclic */
 	unsigned for_sync:1;		/* sync(2) WB_SYNC_ALL writeback */
 #ifdef CONFIG_CGROUP_WRITEBACK

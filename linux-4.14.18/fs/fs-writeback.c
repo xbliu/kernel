@@ -1590,7 +1590,7 @@ static long writeback_sb_inodes(struct super_block *sb,
 		 * We use I_SYNC to pin the inode in memory. While it is set
 		 * evict_inode() will wait so the inode cannot be freed.
 		 */
-		__writeback_single_inode(inode, &wbc);
+		__writeback_single_inode(inode, &wbc);//回写单个inode下所有的脏页
 
 		wbc_detach_inode(&wbc);
 		work->nr_pages -= write_chunk - wbc.nr_to_write;
@@ -1664,6 +1664,7 @@ static long __writeback_inodes_wb(struct bdi_writeback *wb,
 			redirty_tail(inode, wb);
 			continue;
 		}
+        /*回写同一文件系统下的inodes*/
 		wrote += writeback_sb_inodes(sb, wb, work);
 		up_read(&sb->s_umount);
 
@@ -1689,13 +1690,16 @@ static long writeback_inodes_wb(struct bdi_writeback *wb, long nr_pages,
 		.reason		= reason,
 	};
 	struct blk_plug plug;
-
+    /*a1.block 堵塞(蓄流)*/
 	blk_start_plug(&plug);
 	spin_lock(&wb->list_lock);
+    /*a2.若b_io为空,将所有过期的脏inodes入队到wb->bio*/
 	if (list_empty(&wb->b_io))
 		queue_io(wb, &work);
+    /*a3.回写过期的脏inodes*/
 	__writeback_inodes_wb(wb, &work);
 	spin_unlock(&wb->list_lock);
+    /*a4.block 池流*/
 	blk_finish_plug(&plug);
 
 	return nr_pages - work.nr_pages;

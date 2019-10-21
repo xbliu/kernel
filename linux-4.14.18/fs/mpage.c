@@ -732,7 +732,7 @@ mpage_writepages(struct address_space *mapping,
 {
 	struct blk_plug plug;
 	int ret;
-
+    /*a1.block 蓄流*/
 	blk_start_plug(&plug);
 
 	if (!get_block)
@@ -745,13 +745,16 @@ mpage_writepages(struct address_space *mapping,
 			.use_writepage = 1,
 		};
 
+        /*a2.写cache pages*/
 		ret = write_cache_pages(mapping, wbc, __mpage_writepage, &mpd);
 		if (mpd.bio) {
 			int op_flags = (wbc->sync_mode == WB_SYNC_ALL ?
 				  REQ_SYNC : 0);
+            /*a3.提交bio*/
 			mpage_bio_submit(REQ_OP_WRITE, op_flags, mpd.bio);
 		}
 	}
+    /*a4.block 泄流*/
 	blk_finish_plug(&plug);
 	return ret;
 }
