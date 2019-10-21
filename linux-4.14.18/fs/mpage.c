@@ -510,7 +510,26 @@ void clean_page_buffers(struct page *page)
 {
 	clean_buffers(page, ~0U);
 }
-
+/*
+_mpage_writepage函数是写文件的核心接口。代码大致流程如下：                                                                                                                                                                                                                                                                     。
+如果page有buffer_head，则完成磁盘映射，代码只支持所有page都被设为脏页的写，除非没有设为脏页的page放到文件的尾部，                                                                                                                                                                                      。
+即要求page设置脏页的连续性                                                                                                                                                                                                                                                                                                               。
+如果page没有buffer_head，在接口中所有page被设为脏页。如果所有的block都是连续的则直接进入bio请求流程，否则重新回到writepage的映射流程。
+用page_has_buffers判断当前page是否有buffer_head(bh)，如果有则用page_buffers将当前page转换为buffer_head的bh指针，                                                                                                                                                                                                            。
+之后用bh->b_this_page遍历当前page的所有bh，调用buffer_locked(bh)加锁buffer——head，即使出现一个bh没有被映射都会进入confused流程，                                                                                                                                                                              。
+first_unmapped记录了第一个没有映射的bh，除了要保证所有的bh都被映射，还要保证所有的bh都被置为脏页并且完成了uptodate                                                                                                                                                                                       。
+如果每个page的block数不为0(通过判断first_unmapped是否非0)，则直接进入当前page已经被映射的流程page_is_mapped，否则进入confused流程。
+如果当前page没有buffer_head(bh)，需要将当前page映射到磁盘上，使用buffer_head变量map_bh封装，做buffer_head和bio之间的转换。
+page_is_mapped流程中如果有bio资源并且检测到当前的页面和前面一个页面的磁盘块号不连续(代码对应bio && mpd->last_block_in_bio != blocks[0] – 1，blocks[0]表示第一个磁盘块)，                                                                                                                           。
+则用mpage_bio_submit来提交一个积累bio请求，将之前的连续block写到设备中。否则进入alloc_new流程。
+alloc_new流程中，判断bio为空(表示前面刚刚提交了一个bio)则需要用mpage_alloc重新申请一个bio资源，之后用bio_add_page向bio中添加当前page，                                                                                                                                                                    。
+如果bio中的长度不能容纳下这次添加page的整个长度，则先将添加到bio上的数据提交bio请求mpage_bio_submit，剩下的数据重新进入到alloc_new流程做bio的申请操作                                                                                                                                         。
+如果一次性将page中的所有数据全部添加到bio上，在page有buffer的情况下要将所有的buffer全部清除脏页位。用set_page_writeback设置该page为写回状态，                                                                                                                                                       。
+给page解锁(unlock_page)。当bh的boundary被设置或者当前页面和前面一个页面的磁盘块号不连续，就先提交一个累积连续block的bio                                                                                                                                                                                   。
+否则说明当前page中的所有block都是连续的，并且与之前的page中block也是连续的，这种情况下不需要提交bio，                                                                                                                                                                                                       。
+只更新前面一个页面的磁盘块号mpd->last_block_in_bio为当前page的最后一个block号，之后退出进行下一个page的连续性检查，直到碰到不连续的再做bio提交。
+confused流程中会提交bio操作，但是会设置映射错误。
+*/
 static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 		      void *data)
 {
