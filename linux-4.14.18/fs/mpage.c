@@ -555,6 +555,14 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 	int ret = 0;
 	int op_flags = wbc_to_write_flags(wbc);
 
+    /* 
+    a1.page 有buffer_head的情况处理 
+    1)page中的脏block连续则一起处理,否则分开处理 
+    2)page中脏block不连续的情况有: 
+        i: 上一个block unmapped接着的下一个block mapped
+        ii: 前面的脏block,当前block的不为脏 
+        iii: 上一个block的扇区序号与接着的下一个block扇区序号不连续
+    */
 	if (page_has_buffers(page)) {
 		struct buffer_head *head = page_buffers(page);
 		struct buffer_head *bh = head;
@@ -568,24 +576,24 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 				 * unmapped dirty buffers are created by
 				 * __set_page_dirty_buffers -> mmapped data
 				 */
-				if (buffer_dirty(bh))
+				if (buffer_dirty(bh)) //数据未mapped但已修改
 					goto confused;
-				if (first_unmapped == blocks_per_page)
+				if (first_unmapped == blocks_per_page) //记录第一个未unmapped的block
 					first_unmapped = page_block;
 				continue;
 			}
 
-			if (first_unmapped != blocks_per_page)
+			if (first_unmapped != blocks_per_page) //脏页不连续,分开处理
 				goto confused;	/* hole -> non-hole */
 
-			if (!buffer_dirty(bh) || !buffer_uptodate(bh))
+			if (!buffer_dirty(bh) || !buffer_uptodate(bh)) //page中有block数据未修改或者未对这块进行操作
 				goto confused;
-			if (page_block) {
+			if (page_block) { //前后两个block扇区序号不连续,分开提交处理
 				if (bh->b_blocknr != blocks[page_block-1] + 1)
 					goto confused;
 			}
-			blocks[page_block++] = bh->b_blocknr;
-			boundary = buffer_boundary(bh);
+			blocks[page_block++] = bh->b_blocknr; //序号存入blocks数组
+			boundary = buffer_boundary(bh);//ext2 直接寻block<最后一个为boundary值> 一级指针寻block 二级指针寻block
 			if (boundary) {
 				boundary_block = bh->b_blocknr;
 				boundary_bdev = bh->b_bdev;
@@ -593,7 +601,7 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 			bdev = bh->b_bdev;
 		} while ((bh = bh->b_this_page) != head);
 
-		if (first_unmapped)
+		if (first_unmapped) //所有的block连续,一并处理
 			goto page_is_mapped;
 
 		/*
@@ -602,36 +610,43 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 		 * block_read_full_page().  If this address_space is also
 		 * using mpage_readpages then this can rarely happen.
 		 */
-		goto confused;
+		goto confused; //所有的block都unmapped <first_unmapped=0,blocks中存有脏block扇区号时page_block自增>
 	}
 
 	/*
 	 * The page has no buffers: map it to disk
 	 */
+    /*
+    a2.page未有buffer_head,映射到磁盘 
+    不连续的情况(has buffer): 
+    i对应mpd->get_block不成功 
+    iii一样 
+    ii未存在<????> 
+    */
 	BUG_ON(!PageUptodate(page));
-	block_in_file = (sector_t)page->index << (PAGE_SHIFT - blkbits);
-	last_block = (i_size - 1) >> blkbits;
+	block_in_file = (sector_t)page->index << (PAGE_SHIFT - blkbits); //在文件中的逻辑序号
+	last_block = (i_size - 1) >> blkbits; //文件的最后一个逻辑序号<当前最大的逻辑序号>
 	map_bh.b_page = page;
 	for (page_block = 0; page_block < blocks_per_page; ) {
 
 		map_bh.b_state = 0;
 		map_bh.b_size = 1 << blkbits;
-		if (mpd->get_block(inode, block_in_file, &map_bh, 1))
+		if (mpd->get_block(inode, block_in_file, &map_bh, 1)) //获取物理扇区号
 			goto confused;
 		if (buffer_new(&map_bh))
-			clean_bdev_bh_alias(&map_bh);
-		if (buffer_boundary(&map_bh)) {
+			clean_bdev_bh_alias(&map_bh); //????
+		if (buffer_boundary(&map_bh)) { //标记边界
 			boundary_block = map_bh.b_blocknr;
 			boundary_bdev = map_bh.b_bdev;
 		}
-		if (page_block) {
-			if (map_bh.b_blocknr != blocks[page_block-1] + 1)
+		if (page_block) { 
+			if (map_bh.b_blocknr != blocks[page_block-1] + 1) //前后两个block(逻辑序号连续)物理扇区序号不一样
 				goto confused;
 		}
 		blocks[page_block++] = map_bh.b_blocknr;
 		boundary = buffer_boundary(&map_bh);
 		bdev = map_bh.b_bdev;
-		if (block_in_file == last_block)
+		if (block_in_file == last_block) //不超过文件的大小
 			break;
 		block_in_file++;
 	}
@@ -641,6 +656,11 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 
 page_is_mapped:
 	end_index = i_size >> PAGE_SHIFT;
+    /*
+    页面跨越i_size.它必须在每个写入页调用时归零，因为它可能被覆盖. 
+    "文件以页面大小的倍数映射. 对于不是页面大小的倍数的文件，在映射时将剩余内存归零，并且写入该区域的内存不会写入该文件. 
+    (文件对应的最后一页,最后一页的部分block才包含文件的数据,其它的需清0)
+    */
 	if (page->index >= end_index) {
 		/*
 		 * The page straddles i_size.  It must be zeroed out on each
@@ -660,12 +680,14 @@ page_is_mapped:
 	/*
 	 * This page will go to BIO.  Do we need to send this BIO off first?
 	 */
+    /*a3.提交的脏扇区号与上一个扇区号不连续分开提交*/
 	if (bio && mpd->last_block_in_bio != blocks[0] - 1)
 		bio = mpage_bio_submit(REQ_OP_WRITE, op_flags, bio);
 
+    /*a4.为这次的连续的脏block分配bio*/
 alloc_new:
 	if (bio == NULL) {
-		if (first_unmapped == blocks_per_page) {
+		if (first_unmapped == blocks_per_page) { //页中所有block都为脏,将其写入块设备
 			if (!bdev_write_page(bdev, blocks[0] << (blkbits - 9),
 								page, wbc))
 				goto out;
@@ -694,9 +716,9 @@ alloc_new:
 	clean_buffers(page, first_unmapped);
 
 	BUG_ON(PageWriteback(page));
-	set_page_writeback(page);
+	set_page_writeback(page); //设置page回写中
 	unlock_page(page);
-	if (boundary || (first_unmapped != blocks_per_page)) {
+	if (boundary || (first_unmapped != blocks_per_page)) { //遇到边界值或者文件数据只占一页中部分block
 		bio = mpage_bio_submit(REQ_OP_WRITE, op_flags, bio);
 		if (boundary_block) {
 			write_boundary_block(boundary_bdev,
@@ -708,7 +730,7 @@ alloc_new:
 	goto out;
 
 confused:
-	if (bio)
+	if (bio) //不连续提交之前的bio
 		bio = mpage_bio_submit(REQ_OP_WRITE, op_flags, bio);
 
 	if (mpd->use_writepage) {
