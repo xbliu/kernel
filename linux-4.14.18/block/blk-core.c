@@ -2198,7 +2198,7 @@ end_io:
  */
 /*
 关键点:
-1)make_request_fn可能递归generic_make_request
+1)make_request_fn可能递归generic_make_request (什么情况下递归???)
 所以有current->bio_list这个if判断
 2)由于make_request_fn可能递归generic_make_request,所以接下来的bio_list_on_stack[0]可含有多个bio(同级),
 假若此同级的某一个bio又递归,则会产生更低一级的bio集合.那么该如何处理?
