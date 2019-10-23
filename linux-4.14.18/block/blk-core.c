@@ -2196,6 +2196,14 @@ end_io:
  * a lower device by calling into generic_make_request recursively, which
  * means the bio should NOT be touched after the call to ->make_request_fn.
  */
+/*
+关键点:
+1)make_request_fn可能递归generic_make_request
+所以有current->bio_list这个if判断
+2)由于make_request_fn可能递归generic_make_request,所以接下来的bio_list_on_stack[0]可含有多个bio(同级),
+假若此同级的某一个bio又递归,则会产生更低一级的bio集合.那么该如何处理?
+优先先处理更低一级的bio,再处理同级的bio.
+*/
 blk_qc_t generic_make_request(struct bio *bio)
 {
 	/*
@@ -2205,6 +2213,10 @@ blk_qc_t generic_make_request(struct bio *bio)
 	 * the current make_request_fn, but that haven't been processed
 	 * yet.
 	 */
+    /*
+    bio_list_on_stack[0]保存当前make_request_fn需要提交的bio 
+    bio_list_on_stack[1]保存当前make_request_fn需要提交的尚未处理的bio
+    */
 	struct bio_list bio_list_on_stack[2];
 	blk_qc_t ret = BLK_QC_T_NONE;
 
@@ -2221,6 +2233,16 @@ blk_qc_t generic_make_request(struct bio *bio)
 	 * it is non-NULL, then a make_request is active, and new requests
 	 * should be added at the tail
 	 */
+    /*
+    用task_struct中的bio_{list,tail}来保存了由某个make_request_fn()函数提交的的request链表,
+    这样做的目的是内核需要保证在某个时候只允许一个make_request_fn()在执行;
+    bio_tail还有一个作用是用来在当前task中,generic_make_request()是否是active还是inactive. 
+    如果current->bio_tail为NULL,则表明没有任何的make_request是active. 
+    否则,有某个make_request是active,所有新的new requests都应该加到bio_tail中
+    */
+    /*a1.保证当前任务(current->bio_list)只有一个generic_make_request激活*/
+    //q->make_request_fn可能会递归调用generic_make_request,该函数会判断当前的bio是否超过了最大能处理能力范围,
+    //若是则将其拆分，拆分后的剩余bio将会再次被加入到generic_make_request函数中
 	if (current->bio_list) {
 		bio_list_add(&current->bio_list[0], bio);
 		goto out;
@@ -2241,17 +2263,31 @@ blk_qc_t generic_make_request(struct bio *bio)
 	 * bio_list, and call into ->make_request() again.
 	 */
 	BUG_ON(bio->bi_next);
+    /*a2.将bio_list中的bio加入到request_queue中*/
 	bio_list_init(&bio_list_on_stack[0]);
 	current->bio_list = bio_list_on_stack;
 	do {
 		struct request_queue *q = bio->bi_disk->queue;
 
+        //判断当前的设备队列是否有效能够响应该请求
 		if (likely(blk_queue_enter(q, bio->bi_opf & REQ_NOWAIT) == 0)) {
 			struct bio_list lower, same;
 
 			/* Create a fresh bio_list for all subordinate requests */
+            /*
+            b1.将bio_list_on_stack[0]的bio保存起来 
+            ( 
+            i:假设首次进入此处,bio_list_on_stack[0]为空,处理当前bio 
+            ii: make_request_fn不断递归generic_make_request,bio_list_on_stack[0]存有许多bio 
+            iii: make_request_fn不再递归,开始执行c3,所有的bio都在bio_list_on_stack[0] 
+            iii:c4取出一个新的bio,第二次到达此处,此bio的make_request_fn处理也可能递归generic_make_request, 
+             所以与之同级bio_list_on_stack[0]上的bio需要存储,要不然递归时会丢失
+            )
+            */
 			bio_list_on_stack[1] = bio_list_on_stack[0];
 			bio_list_init(&bio_list_on_stack[0]);
+
+            /*b2.处理当前bio*/
 			ret = q->make_request_fn(q, bio);
 
 			blk_queue_exit(q);
@@ -2259,6 +2295,10 @@ blk_qc_t generic_make_request(struct bio *bio)
 			/* sort new bios into those for a lower level
 			 * and those for the same level
 			 */
+            /*
+            c3.对bio_list_on_stack[0]上的bio按是否是同一request_queue进行分类, 
+            并将其与未处理的bio_list_on_stack[1]重新合入到bio_list_on_stack[0]上
+            */
 			bio_list_init(&lower);
 			bio_list_init(&same);
 			while ((bio = bio_list_pop(&bio_list_on_stack[0])) != NULL)
@@ -2277,6 +2317,7 @@ blk_qc_t generic_make_request(struct bio *bio)
 			else
 				bio_io_error(bio);
 		}
+        /*c4.从bio_list_on_stack[0]取下一个bio进行处理*/
 		bio = bio_list_pop(&bio_list_on_stack[0]);
 	} while (bio);
 	current->bio_list = NULL; /* deactivate */
