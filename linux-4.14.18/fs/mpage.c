@@ -114,8 +114,8 @@ map_buffer_to_page(struct page *page, struct buffer_head *bh, int page_block)
 		 * the page and the page just needs to be set up to date
 		 */
         /*
-        b1.block size与page size且buffer跟磁盘同步,则无需创建buffers,标记page Uptodate即可 
-        这种情况什么时候发生???
+        b1.block size与page size且buffer跟磁盘同步,则无需创建buffers,标记page Uptodate即可
+        <那些文件系统支持返回uptodate的buffer.且buffer映射到page,可以避免重复调用get_block>
         */
 		if (inode->i_blkbits == PAGE_SHIFT &&
 		    buffer_uptodate(bh)) {
