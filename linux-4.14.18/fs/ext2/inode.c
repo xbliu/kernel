@@ -723,6 +723,7 @@ static int ext2_get_blocks(struct inode *inode,
 	 * Okay, we need to do block allocation.  Lazily initialize the block
 	 * allocation info here if necessary
 	*/
+    /*新建逻辑块号相对应的物理块号<文件扩充部分>*/
 	if (S_ISREG(inode->i_mode) && (!ei->i_block_alloc_info))
 		ext2_init_block_alloc_info(inode);
 
@@ -802,13 +803,13 @@ int ext2_get_block(struct inode *inode, sector_t iblock,
 	*/
 	ret = ext2_get_blocks(inode, iblock, max_blocks, &bno, &new, &boundary,
 			create);
-	if (ret <= 0)
+	if (ret <= 0) //0 ==ret 文件空洞
 		return ret;
 	
 	/*对物理块为[bno,bno+ret]作为一次请求读取*/
 	map_bh(bh_result, inode->i_sb, bno);
 	bh_result->b_size = (ret << inode->i_blkbits); 
-	if (new) /*新建块 ？？？*/ 
+	if (new) /*新分配磁盘物理块*/ 
 		set_buffer_new(bh_result);
 	if (boundary)
 		set_buffer_boundary(bh_result);

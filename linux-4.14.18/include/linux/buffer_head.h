@@ -65,7 +65,7 @@ struct buffer_head {
 	struct buffer_head *b_this_page;/* circular list of page's buffers */
 	struct page *b_page;		/* the page this bh is mapped to */
 
-	sector_t b_blocknr;		/* start block number */
+	sector_t b_blocknr;		/* start block number (文件系统上对应的物理块号/存储数据的块号)*/
 	size_t b_size;			/* size of mapping */
 	char *b_data;			/* pointer to data within the page */
 
@@ -274,7 +274,7 @@ static inline void attach_page_buffers(struct page *page,
 		struct buffer_head *head)
 {
 	get_page(page);
-	SetPagePrivate(page);
+	SetPagePrivate(page);//设置PG_private标志，通知内核其他部分，page实例的private成员正在使用中 
 	set_page_private(page, (unsigned long)head);
 }
 

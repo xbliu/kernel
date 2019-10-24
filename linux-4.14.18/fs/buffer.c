@@ -174,7 +174,7 @@ EXPORT_SYMBOL(end_buffer_read_sync);
 
 void end_buffer_write_sync(struct buffer_head *bh, int uptodate)
 {
-	if (uptodate) {
+	if (uptodate) { //bio status==BLK_STS_OK
 		set_buffer_uptodate(bh);
 	} else {
 		buffer_io_error(bh, ", lost sync page write");
@@ -287,6 +287,7 @@ static void end_buffer_async_read(struct buffer_head *bh, int uptodate)
 
 	BUG_ON(!buffer_async_read(bh));
 
+    /*a1.更新buffer head状态*/
 	page = bh->b_page;
 	if (uptodate) {
 		set_buffer_uptodate(bh);
@@ -301,9 +302,10 @@ static void end_buffer_async_read(struct buffer_head *bh, int uptodate)
 	 * two buffer heads end IO at almost the same time and both
 	 * decide that the page is now completely done.
 	 */
+    /*a2.检查page中的所有的buffer head是否都同步完成(uptodate)*/
 	first = page_buffers(page);
 	local_irq_save(flags);
-	bit_spin_lock(BH_Uptodate_Lock, &first->b_state);
+	bit_spin_lock(BH_Uptodate_Lock, &first->b_state);//异步时所有的buffer head uptodate状态检测
 	clear_buffer_async_read(bh);
 	unlock_buffer(bh);
 	tmp = bh;
@@ -323,6 +325,7 @@ static void end_buffer_async_read(struct buffer_head *bh, int uptodate)
 	 * If none of the buffers had errors and they are all
 	 * uptodate then we can set the page uptodate.
 	 */
+    /*a2.所有的buffer head都uptodate,更新page状态为Uptodate*/
 	if (page_uptodate && !PageError(page))
 		SetPageUptodate(page);
 	unlock_page(page);
@@ -347,6 +350,7 @@ void end_buffer_async_write(struct buffer_head *bh, int uptodate)
 
 	BUG_ON(!buffer_async_write(bh));
 
+     /*a1.更新buffer head状态*/
 	page = bh->b_page;
 	if (uptodate) {
 		set_buffer_uptodate(bh);
@@ -357,10 +361,10 @@ void end_buffer_async_write(struct buffer_head *bh, int uptodate)
 		SetPageError(page);
 	}
 
+    /*a2.检查page中的所有的buffer head是否都同步完成(uptodate)*/
 	first = page_buffers(page);
 	local_irq_save(flags);
 	bit_spin_lock(BH_Uptodate_Lock, &first->b_state);
-
 	clear_buffer_async_write(bh);
 	unlock_buffer(bh);
 	tmp = bh->b_this_page;
@@ -373,6 +377,7 @@ void end_buffer_async_write(struct buffer_head *bh, int uptodate)
 	}
 	bit_spin_unlock(BH_Uptodate_Lock, &first->b_state);
 	local_irq_restore(flags);
+    /*a3.结束页回写*/
 	end_page_writeback(page);
 	return;
 
@@ -1575,6 +1580,7 @@ void create_empty_buffers(struct page *page,
 {
 	struct buffer_head *bh, *head, *tail;
 
+    /*a1.分配buffer head并设置state*/
 	head = alloc_page_buffers(page, blocksize, 1);
 	bh = head;
 	do {
@@ -1585,6 +1591,7 @@ void create_empty_buffers(struct page *page,
 	tail->b_this_page = head;
 
 	spin_lock(&page->mapping->private_lock);
+    /*a2.同步page的状态到buffer head*/
 	if (PageUptodate(page) || PageDirty(page)) {
 		bh = head;
 		do {
@@ -1595,6 +1602,7 @@ void create_empty_buffers(struct page *page,
 			bh = bh->b_this_page;
 		} while (bh != head);
 	}
+    /*a3.关联buffer head到page*/
 	attach_page_buffers(page, head);
 	spin_unlock(&page->mapping->private_lock);
 }
@@ -1725,6 +1733,7 @@ static struct buffer_head *create_page_buffers(struct page *page, struct inode *
  * WB_SYNC_ALL, the writes are posted using REQ_SYNC; this
  * causes the writes to be flagged as synchronous writes.
  */
+/*WB_SYNC_ALL 怎么保证同步写???*/
 int __block_write_full_page(struct inode *inode, struct page *page,
 			get_block_t *get_block, struct writeback_control *wbc,
 			bh_end_io_t *handler)
@@ -1737,6 +1746,7 @@ int __block_write_full_page(struct inode *inode, struct page *page,
 	int nr_underway = 0;
 	int write_flags = wbc_to_write_flags(wbc);
 
+    /*a1.没有则创建buffer head*/
 	head = create_page_buffers(page, inode,
 					(1 << BH_Dirty)|(1 << BH_Uptodate));
 
@@ -1761,8 +1771,10 @@ int __block_write_full_page(struct inode *inode, struct page *page,
 	 * Get all the dirty buffers mapped to disk addresses and
 	 * handle any aliases from the underlying blockdev's mapping.
 	 */
+     /*对所有未映射的脏缓冲区，在缓冲区和块设备之间建立映射*/  
+    /*a2.获取物理块号,即将buffers映射到磁盘*/
 	do {
-		if (block > last_block) {
+		if (block > last_block) { //扩充文件
 			/*
 			 * mapped buffers outside i_size will occur, because
 			 * this page can be outside i_size when there is a
@@ -1774,7 +1786,7 @@ int __block_write_full_page(struct inode *inode, struct page *page,
 			clear_buffer_dirty(bh);
 			set_buffer_uptodate(bh);
 		} else if ((!buffer_mapped(bh) || buffer_delay(bh)) &&
-			   buffer_dirty(bh)) {
+			   buffer_dirty(bh)) { //查找逻辑块号对应的物理块号
 			WARN_ON(bh->b_size != blocksize);
 			err = get_block(inode, block, bh, 1);
 			if (err)
@@ -1790,6 +1802,7 @@ int __block_write_full_page(struct inode *inode, struct page *page,
 		block++;
 	} while (bh != head);
 
+    /*a2.标记异步写,同步写还需buffer上锁*/
 	do {
 		if (!buffer_mapped(bh))
 			continue;
@@ -1800,14 +1813,14 @@ int __block_write_full_page(struct inode *inode, struct page *page,
 		 * and kswapd activity, but those code paths have their own
 		 * higher-level throttling.
 		 */
-		if (wbc->sync_mode != WB_SYNC_NONE) {
+		if (wbc->sync_mode != WB_SYNC_NONE) { //同步写
 			lock_buffer(bh);
-		} else if (!trylock_buffer(bh)) {
+		} else if (!trylock_buffer(bh)) { //WB_SYNC_NONE redirty a page
 			redirty_page_for_writepage(wbc, page);
 			continue;
 		}
 		if (test_clear_buffer_dirty(bh)) {
-			mark_buffer_async_write_endio(bh, handler);
+			mark_buffer_async_write_endio(bh, handler); //异步写
 		} else {
 			unlock_buffer(bh);
 		}
@@ -1817,9 +1830,11 @@ int __block_write_full_page(struct inode *inode, struct page *page,
 	 * The page and its buffers are protected by PageWriteback(), so we can
 	 * drop the bh refcounts early.
 	 */
+    /*a4.设置page回写*/
 	BUG_ON(PageWriteback(page));
 	set_page_writeback(page);
 
+    /*a5.异步写提交bio*/
 	do {
 		struct buffer_head *next = bh->b_this_page;
 		if (buffer_async_write(bh)) {
@@ -1831,6 +1846,7 @@ int __block_write_full_page(struct inode *inode, struct page *page,
 	} while (bh != head);
 	unlock_page(page);
 
+    /*a6.回写结束处理*/
 	err = 0;
 done:
 	if (nr_underway == 0) {
@@ -1848,6 +1864,7 @@ done:
 	}
 	return err;
 
+    /*a7.重新发起异步回写*/
 recover:
 	/*
 	 * ENOSPC, or some other error.  We may already have added some
@@ -2042,7 +2059,7 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 
 			if (buffer_new(bh)) {
 				clean_bdev_bh_alias(bh);
-				if (PageUptodate(page)) {
+				if (PageUptodate(page)) {//新建物理块号,page有新内容需写入,此时buffer应uptodate&&dirty
 					clear_buffer_new(bh);
 					set_buffer_uptodate(bh);
 					mark_buffer_dirty(bh);
@@ -2198,6 +2215,7 @@ int block_write_end(struct file *file, struct address_space *mapping,
 	flush_dcache_page(page);
 
 	/* This could be a short (even 0-length) commit */
+    /*a2.更新page(Uptodate) buffer_head(uptodate,dirty)的状态 */
 	__block_commit_write(inode, page, start, start+copied);
 
 	return copied;
@@ -2221,7 +2239,8 @@ int generic_write_end(struct file *file, struct address_space *mapping,
 	 * But it's important to update i_size while still holding page lock:
 	 * page writeout could otherwise come in and zero beyond i_size.
 	 */
-	if (pos+copied > inode->i_size) {
+    /*a2.若写入最终位置大于文件原来的大小,更新它*/
+    if (pos+copied > inode->i_size) {
 		i_size_write(inode, pos+copied);
 		i_size_changed = 1;
 	}
@@ -2237,6 +2256,7 @@ int generic_write_end(struct file *file, struct address_space *mapping,
 	 * ordering of page lock and transaction start for journaling
 	 * filesystems.
 	 */
+    /*a2.文件大小更改,元数据(inode)为脏*/
 	if (i_size_changed)
 		mark_inode_dirty(inode);
 
@@ -2305,17 +2325,22 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 	int nr, i;
 	int fully_mapped = 1;
 
+    /*a1.获取buffers(buffer head)*/
 	head = create_page_buffers(page, inode, 0);
 	blocksize = head->b_size;
 	bbits = block_size_bits(blocksize);
 
-	iblock = (sector_t)page->index << (PAGE_SHIFT - bbits);
-	lblock = (i_size_read(inode)+blocksize-1) >> bbits;
+	iblock = (sector_t)page->index << (PAGE_SHIFT - bbits); //start block num
+	lblock = (i_size_read(inode)+blocksize-1) >> bbits; //last block num
 	bh = head;
 	nr = 0;
 	i = 0;
 
+    /*a1.获取buffer_head关联的物理块号*/
 	do {
+        /*如果缓冲区内容是最新的，内核继续处理下一个 
+        缓冲区。在这种情况下，页面缓冲区中的数据与块 
+        设备匹配，无需额外的读操作*/  
 		if (buffer_uptodate(bh))
 			continue;
 
@@ -2323,12 +2348,14 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 			int err = 0;
 
 			fully_mapped = 0;
+            /*b1. 获取物理块号*/
 			if (iblock < lblock) {
 				WARN_ON(bh->b_size != blocksize);
 				err = get_block(inode, iblock, bh, 0);
 				if (err)
 					SetPageError(page);
 			}
+            /*b2.文件空洞 page相关区域清0即可,设置buffer_head跟磁盘状态同步(uptodate)*/
 			if (!buffer_mapped(bh)) {
 				zero_user(page, i * blocksize, blocksize);
 				if (!err)
@@ -2342,6 +2369,7 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 			if (buffer_uptodate(bh))
 				continue;
 		}
+        /*如果缓冲区已经建立了与块的映射，但是其内容不是最新的则将缓冲区放置到一个临时的数组中*/  
 		arr[nr++] = bh;
 	} while (i++, iblock++, (bh = bh->b_this_page) != head);
 
@@ -2353,13 +2381,14 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 		 * All buffers are uptodate - we can set the page uptodate
 		 * as well. But not if get_block() returned an error.
 		 */
-		if (!PageError(page))
+		if (!PageError(page)) //所有的buffers进入此函数之前已uptodate
 			SetPageUptodate(page);
 		unlock_page(page);
 		return 0;
 	}
 
 	/* Stage two: lock the buffers */
+    /*a2.设置buffers为async_rea(异步读)*/
 	for (i = 0; i < nr; i++) {
 		bh = arr[i];
 		lock_buffer(bh);
@@ -2371,6 +2400,7 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 	 * inside the buffer lock in case another process reading
 	 * the underlying blockdev brought it uptodate (the sct fix).
 	 */
+    /*a3.提交IO读操作*/
 	for (i = 0; i < nr; i++) {
 		bh = arr[i];
 		if (buffer_uptodate(bh))

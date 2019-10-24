@@ -607,7 +607,7 @@ struct inode {
 	struct timespec		i_ctime; //结点最后修改的时间
 	spinlock_t		i_lock;	/* i_blocks, i_bytes, maybe i_size */
 	unsigned short          i_bytes;
-	unsigned int		i_blkbits;
+	unsigned int		i_blkbits; //块设备的块大小的位数(block size跟sector size概念不一样)
 	enum rw_hint		i_write_hint;
 	blkcnt_t		i_blocks;
 

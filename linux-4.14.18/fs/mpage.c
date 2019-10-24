@@ -107,18 +107,25 @@ map_buffer_to_page(struct page *page, struct buffer_head *bh, int page_block)
 	struct buffer_head *page_bh, *head;
 	int block = 0;
 
+    /*a1.page无buffers则创建*/
 	if (!page_has_buffers(page)) {
 		/*
 		 * don't make any buffers if there is only one buffer on
 		 * the page and the page just needs to be set up to date
 		 */
+        /*
+        b1.block size与page size且buffer跟磁盘同步,则无需创建buffers,标记page Uptodate即可 
+        这种情况什么时候发生???
+        */
 		if (inode->i_blkbits == PAGE_SHIFT &&
 		    buffer_uptodate(bh)) {
 			SetPageUptodate(page);    
 			return;
 		}
+        /*b2.创建buffers*/
 		create_empty_buffers(page, i_blocksize(inode), 0);
 	}
+    /*a2.设置buffer_head*/
 	head = page_buffers(page);
 	page_bh = head;
 	do {
@@ -164,15 +171,21 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 	unsigned nblocks;
 	unsigned relative_block;
 
-	if (page_has_buffers(page)) //{page中的block非连续}
+	if (page_has_buffers(page)) //page中已有对应有buffer_head,说明已经映射到磁盘空间,无需再执行映射动作
 		goto confused;
 	
-	//
-	//将页号转换成文件的块号(毕竟文件系统中以block为单位进行存储数据);
-	//如file size:2M  page size:4K(PAGE_SHIFT 12)  block size:512byte(blkbits 9)
-	//则有page总数2M/4k=512 block总数有2M/512=4096,
-	//设页序号为5(index),则有block序号5×4K/512=40 即 index * (1<<PAGE_SHIFT)/(1<<blkbits)=index*1<<(PAGE_SHIFT-blkbits)
-	//
+    /*
+    块是文件系统的抽象,不是磁盘本身的属性.扇区大小则是磁盘的物理属性,是磁盘设备寻址的最小单元 
+    block size是sector size的倍数. 
+    一个个block size读比一个个sector size读写消耗更少磁盘IO访问次数,减少访问时间,从而提升IO操作性能. 
+    block太大，存放小文件就会造成空间浪费；block太小，又会消耗磁盘IO.
+    */
+	/*
+    将页号转换成文件的块号(毕竟文件系统中以block为单位进行操作,硬盘以扇区为单位进行操作)
+	如file size:2M  page size:4K(PAGE_SHIFT 12)  block size:1024byte(blkbits 10)
+	则有page总数2M/4k=512 block总数有2M/1024=2048,
+    设页序号为5(index),则有block序号5×4K/1024=20 即 index * (1<<PAGE_SHIFT)/(1<<blkbits)=index*1<<(PAGE_SHIFT-blkbits) 
+    */ 
 	block_in_file = (sector_t)page->index << (PAGE_SHIFT - blkbits);
 	last_block = block_in_file + nr_pages * blocks_per_page;  //最后一个block序号
 	last_block_in_file = (i_size_read(inode) + blocksize - 1) >> blkbits; //文件中最大block序号
@@ -227,7 +240,7 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
  			* return = 0, if plain lookup failed.
  			* return < 0, error case.
 			*/
-			if (get_block(inode, block_in_file, map_bh, 0)) //计算文件逻辑号[block_in_file,last_block]块在硬盘上的位置（即对应的物理块号）是否连续
+			if (get_block(inode, block_in_file, map_bh, 0)) //计算文件逻辑块号[block_in_file,last_block]块在硬盘上的位置(即对应的物理块号)是否连续
 				goto confused;
 			*first_logical_block = block_in_file;
 		}
@@ -404,14 +417,18 @@ mpage_readpages(struct address_space *mapping, struct list_head *pages,
 
 	map_bh.b_state = 0;
 	map_bh.b_size = 0;
+    /*一页一页的处理*/
 	for (page_idx = 0; page_idx < nr_pages; page_idx++) {
 		struct page *page = lru_to_page(pages);
 
 		prefetchw(&page->flags);
+        /*a1.从lru列表中移除*/
 		list_del(&page->lru);
+        /*a2.page加入到page cache*/
 		if (!add_to_page_cache_lru(page, mapping,
 					page->index,
 					gfp)) {
+            /*a3.映射到磁盘空间并构建bio*/
 			bio = do_mpage_readpage(bio, page,
 					nr_pages - page_idx,
 					&last_block_in_bio, &map_bh,
