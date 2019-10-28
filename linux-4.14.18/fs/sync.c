@@ -109,11 +109,11 @@ SYSCALL_DEFINE0(sync)
 {
 	int nowait = 0, wait = 1;
 
-	wakeup_flusher_threads(0, WB_REASON_SYNC);
-	iterate_supers(sync_inodes_one_sb, NULL);
-	iterate_supers(sync_fs_one_sb, &nowait);
+	wakeup_flusher_threads(0, WB_REASON_SYNC); //唤醒flusher线程进行回收
+	iterate_supers(sync_inodes_one_sb, NULL); //同步所有有效的文件系统下的所有inode
+	iterate_supers(sync_fs_one_sb, &nowait); //同步文件系统元数据
 	iterate_supers(sync_fs_one_sb, &wait);
-	iterate_bdevs(fdatawrite_one_bdev, NULL);
+	iterate_bdevs(fdatawrite_one_bdev, NULL); //回写块设备的缓存数据 bdev->bd_inode->i_mapping
 	iterate_bdevs(fdatawait_one_bdev, NULL);
 	if (unlikely(laptop_mode))
 		laptop_sync_completion();

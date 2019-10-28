@@ -974,17 +974,22 @@ int __generic_file_fsync(struct file *file, loff_t start, loff_t end,
 	int err;
 	int ret;
 
+    /*a1.dirty page cache回写*/
 	err = file_write_and_wait_range(file, start, end);
 	if (err)
 		return err;
 
 	inode_lock(inode);
+    /*a2.不知道b_assoc_buffers关联的是什么???*/
 	ret = sync_mapping_buffers(inode->i_mapping);
 	if (!(inode->i_state & I_DIRTY_ALL))
 		goto out;
+
+    /*a3.数据同步且inode 只有mtime改变,无需同步元数据*/
 	if (datasync && !(inode->i_state & I_DIRTY_DATASYNC))
 		goto out;
 
+    /*a4.同步inode元数据*/
 	err = sync_inode_metadata(inode, 1);
 	if (ret == 0)
 		ret = err;

@@ -1315,7 +1315,7 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	WARN_ON(!(inode->i_state & I_SYNC));
 
 	trace_writeback_single_inode_start(inode, wbc, nr_to_write);
-
+    /*a1.发起回写page cache*/
 	ret = do_writepages(mapping, wbc);
 
 	/*
@@ -1325,6 +1325,7 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	 * separate, external IO completion path and ->sync_fs for guaranteeing
 	 * inode metadata is written back correctly.
 	 */
+    /*a2.等待数据回写完成  sync(2)是什么???*/
 	if (wbc->sync_mode == WB_SYNC_ALL && !wbc->for_sync) {
 		int err = filemap_fdatawait(mapping);
 		if (ret == 0)
@@ -1338,6 +1339,7 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	 */
 	spin_lock(&inode->i_lock);
 	/*对于回写期间中再次dirty的结点如何处理? I_DIRTY_TIME I_DIRTY_TIME_EXPIRED表示什么？*/
+    /*a3.清除metadata flags <哪些情况???>*/
 	dirty = inode->i_state & I_DIRTY;
 	if (inode->i_state & I_DIRTY_TIME) {
 		if ((dirty & (I_DIRTY_SYNC | I_DIRTY_DATASYNC)) ||
@@ -1374,8 +1376,9 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	if (dirty & I_DIRTY_TIME)
 		mark_inode_dirty_sync(inode);
 	/* Don't write the inode if only I_DIRTY_PAGES was set */
+    /*a4.只有I_DIRTY_PAGES则不回写inode*/
 	if (dirty & ~I_DIRTY_PAGES) {
-		int err = write_inode(inode, wbc);
+		int err = write_inode(inode, wbc); //super_operations write_inode
 		if (ret == 0)
 			ret = err;
 	}
@@ -1410,6 +1413,10 @@ static int writeback_single_inode(struct inode *inode,
 	else
 		WARN_ON(inode->i_state & I_WILL_FREE);
 
+    /*
+    a1.inode回写正在进行,且为同步等待模式,则等待回写完成,否则此次结点回写放弃 
+    (同一时间段异步结点回写有且只需一个在运行)
+    */
 	if (inode->i_state & I_SYNC) {
 		if (wbc->sync_mode != WB_SYNC_ALL)
 			goto out;
@@ -1429,13 +1436,16 @@ static int writeback_single_inode(struct inode *inode,
 	 * make sure inode is on some writeback list and leave it there unless
 	 * we have completely cleaned the inode.
 	 */
+    /*a2.inode干净且异步回写无需再同步结点*/
 	if (!(inode->i_state & I_DIRTY_ALL) &&
 	    (wbc->sync_mode != WB_SYNC_ALL ||
 	     !mapping_tagged(inode->i_mapping, PAGECACHE_TAG_WRITEBACK)))
 		goto out;
+    /*a3.标记inode正在回写*/
 	inode->i_state |= I_SYNC;
 	wbc_attach_and_unlock_inode(wbc, inode);
 
+    /*a4.回写单个inode*/
 	ret = __writeback_single_inode(inode, wbc);
 
 	wbc_detach_inode(wbc);
@@ -1446,6 +1456,7 @@ static int writeback_single_inode(struct inode *inode,
 	 * If inode is clean, remove it from writeback lists. Otherwise don't
 	 * touch it. See comment above for explanation.
 	 */
+    /*a5.inode 干净,移除回写队列*/
 	if (!(inode->i_state & I_DIRTY_ALL))
 		inode_io_list_del_locked(inode, wb);
 	spin_unlock(&wb->list_lock);

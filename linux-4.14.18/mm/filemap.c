@@ -337,7 +337,8 @@ int __filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 		.range_start = start,
 		.range_end = end,
 	};
-
+    
+    /*是否支持回写动作*/
 	if (!mapping_cap_writeback_dirty(mapping))
 		return 0;
 
@@ -411,8 +412,8 @@ EXPORT_SYMBOL(filemap_range_has_page);
 static void __filemap_fdatawait_range(struct address_space *mapping,
 				     loff_t start_byte, loff_t end_byte)
 {
-	pgoff_t index = start_byte >> PAGE_SHIFT;
-	pgoff_t end = end_byte >> PAGE_SHIFT;
+	pgoff_t index = start_byte >> PAGE_SHIFT; //回写开始索引
+	pgoff_t end = end_byte >> PAGE_SHIFT; //回写结束索引
 	struct pagevec pvec;
 	int nr_pages;
 
@@ -420,6 +421,7 @@ static void __filemap_fdatawait_range(struct address_space *mapping,
 		return;
 
 	pagevec_init(&pvec, 0);
+    /*一次查找最多PAGEVEC_SIZE页(可能多次查找),等待每一页回写完成*/
 	while ((index <= end) &&
 			(nr_pages = pagevec_lookup_tag(&pvec, mapping, &index,
 			PAGECACHE_TAG_WRITEBACK,
@@ -433,7 +435,7 @@ static void __filemap_fdatawait_range(struct address_space *mapping,
 			if (page->index > end)
 				continue;
 
-			wait_on_page_writeback(page);
+			wait_on_page_writeback(page); //等待页回写完成
 			ClearPageError(page);
 		}
 		pagevec_release(&pvec);
@@ -507,6 +509,7 @@ EXPORT_SYMBOL(filemap_fdatawait_keep_errors);
 
 static bool mapping_needs_writeback(struct address_space *mapping)
 {
+    /*dax特性是什么???*/
 	return (!dax_mapping(mapping) && mapping->nrpages) ||
 	    (dax_mapping(mapping) && mapping->nrexceptional);
 }
@@ -650,14 +653,17 @@ int file_write_and_wait_range(struct file *file, loff_t lstart, loff_t lend)
 {
 	int err = 0, err2;
 	struct address_space *mapping = file->f_mapping;
-
+    /*a1.mapping space有缓存page,回写*/
 	if (mapping_needs_writeback(mapping)) {
+        /*b1.发起文件位置为[lstart,lend]的dirty pages回写*/
 		err = __filemap_fdatawrite_range(mapping, lstart, lend,
 						 WB_SYNC_ALL);
 		/* See comment of filemap_write_and_wait() */
+        /*b2.等待页回写完成<PG_writeback清除>*/
 		if (err != -EIO)
 			__filemap_fdatawait_range(mapping, lstart, lend);
 	}
+    /*a2.检查是否出错*/
 	err2 = file_check_and_advance_wb_err(file);
 	if (!err)
 		err = err2;

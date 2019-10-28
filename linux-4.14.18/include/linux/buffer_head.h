@@ -61,21 +61,21 @@ typedef void (bh_end_io_t)(struct buffer_head *bh, int uptodate);
  * for backward compatibility reasons (e.g. submit_bh).
  */
 struct buffer_head {
-	unsigned long b_state;		/* buffer state bitmap (see above) */
-	struct buffer_head *b_this_page;/* circular list of page's buffers */
-	struct page *b_page;		/* the page this bh is mapped to */
+	unsigned long b_state;		/* buffer state bitmap (see above) 缓冲区的状态标志*/
+	struct buffer_head *b_this_page;/* circular list of page's buffers 当前页中缓冲区列表*/
+	struct page *b_page;		/* the page this bh is mapped to 当前缓冲区所在内存页*/
 
 	sector_t b_blocknr;		/* start block number (文件系统上对应的物理块号/存储数据的块号)*/
-	size_t b_size;			/* size of mapping */
-	char *b_data;			/* pointer to data within the page */
+	size_t b_size;			/* size of mapping buffer在内存中的大小*/
+	char *b_data;			/* pointer to data within the page 数据在页中的位置,页内偏移*/
 
-	struct block_device *b_bdev;
+	struct block_device *b_bdev; //关联的块设备(通常是指磁盘或者是分区)
 	bh_end_io_t *b_end_io;		/* I/O completion */
  	void *b_private;		/* reserved for b_end_io */
-	struct list_head b_assoc_buffers; /* associated with another mapping */
+	struct list_head b_assoc_buffers; /* associated with another mapping 关联的其他缓冲区*/
 	struct address_space *b_assoc_map;	/* mapping this buffer is
-						   associated with */
-	atomic_t b_count;		/* users using this buffer_head */
+						   associated with 相关的地址空间address_space*/
+	atomic_t b_count;		/* users using this buffer_head 缓冲区的使用计数*/
 };
 
 /*
