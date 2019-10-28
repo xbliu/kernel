@@ -980,7 +980,12 @@ int __generic_file_fsync(struct file *file, loff_t start, loff_t end,
 		return err;
 
 	inode_lock(inode);
-    /*a2.不知道b_assoc_buffers关联的是什么???*/
+    /*
+    a2. 同步inode间接块数据(文件寻址需要的信息)
+    对于ext2关联的是间接块的buffer_head,
+    ext2_alloc_branch-->mark_buffer_dirty_inode-->list_move_tail(&bh->b_assoc_buffers,&mapping->private_list);
+    分配的是间接块对应的buffer_head,再加入到mapping->private中.
+    */
 	ret = sync_mapping_buffers(inode->i_mapping);
 	if (!(inode->i_state & I_DIRTY_ALL))
 		goto out;
