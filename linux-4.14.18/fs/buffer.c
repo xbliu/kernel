@@ -210,6 +210,7 @@ __find_get_block_slow(struct block_device *bdev, sector_t block)
 	int all_mapped = 1;
 
 	index = block >> (PAGE_SHIFT - bd_inode->i_blkbits);
+	/*a1.查找block对应的page*/
 	page = find_get_page_flags(bd_mapping, index, FGP_ACCESSED);
 	if (!page)
 		goto out;
@@ -217,6 +218,7 @@ __find_get_block_slow(struct block_device *bdev, sector_t block)
 	spin_lock(&bd_mapping->private_lock);
 	if (!page_has_buffers(page))
 		goto out_unlock;
+	/*a2.从page buffers中查找block对应的buffer_head*/
 	head = page_buffers(page);
 	bh = head;
 	do {
@@ -874,6 +876,7 @@ struct buffer_head *alloc_page_buffers(struct page *page, unsigned long size,
 try_again:
 	head = NULL;
 	offset = PAGE_SIZE;
+	/*从最大偏移PAGE_SIZE到0,单向列表，设置在page内的偏移*/
 	while ((offset -= size) >= 0) {
 		bh = alloc_buffer_head(GFP_NOFS);
 		if (!bh)
@@ -950,6 +953,7 @@ static sector_t blkdev_max_block(struct block_device *bdev, unsigned int size)
 /*
  * Initialise the state of a blockdev page's buffers.
  */ 
+ /*关注点:逻辑block号不能超过EOF 逻辑块号*/
 static sector_t
 init_page_buffers(struct page *page, struct block_device *bdev,
 			sector_t block, int size)
@@ -957,8 +961,9 @@ init_page_buffers(struct page *page, struct block_device *bdev,
 	struct buffer_head *head = page_buffers(page);
 	struct buffer_head *bh = head;
 	int uptodate = PageUptodate(page);
-	sector_t end_block = blkdev_max_block(I_BDEV(bdev->bd_inode), size);
+	sector_t end_block = blkdev_max_block(I_BDEV(bdev->bd_inode), size); //获取inode的EOF block号
 
+	/*初始化buffer所属设备与逻辑block号*/
 	do {
 		if (!buffer_mapped(bh)) {
 			init_buffer(bh, NULL, NULL);
@@ -1005,18 +1010,20 @@ grow_dev_page(struct block_device *bdev, sector_t block,
 	 */
 	gfp_mask |= __GFP_NOFAIL;
 
+	/*a1.创建page*/
 	page = find_or_create_page(inode->i_mapping, index, gfp_mask);
 	if (!page)
 		return ret;
 
 	BUG_ON(!PageLocked(page));
 
+	/*a2.若page之前的buffers大小相等,则初始化否则释放 (回收的page????)*/
 	if (page_has_buffers(page)) {
 		bh = page_buffers(page);
 		if (bh->b_size == size) {
 			end_block = init_page_buffers(page, bdev,
 						(sector_t)index << sizebits,
-						size);
+						size); //初始化page buffers
 			goto done;
 		}
 		if (!try_to_free_buffers(page))
@@ -1026,6 +1033,7 @@ grow_dev_page(struct block_device *bdev, sector_t block,
 	/*
 	 * Allocate some buffers for this page
 	 */
+	/*a3.分配buffers*/ 
 	bh = alloc_page_buffers(page, size, 0);
 	if (!bh)
 		goto failed;
@@ -1036,7 +1044,9 @@ grow_dev_page(struct block_device *bdev, sector_t block,
 	 * run under the page lock.
 	 */
 	spin_lock(&inode->i_mapping->private_lock);
+	/*a4.buffes 链接成循环列表(首尾相接)*/
 	link_dev_buffers(page, bh);
+	/*a5.初始化page buffers*/
 	end_block = init_page_buffers(page, bdev, (sector_t)index << sizebits,
 			size);
 	spin_unlock(&inode->i_mapping->private_lock);
@@ -1061,9 +1071,9 @@ grow_buffers(struct block_device *bdev, sector_t block, int size, gfp_t gfp)
 	sizebits = -1;
 	do {
 		sizebits++;
-	} while ((size << sizebits) < PAGE_SIZE);
+	} while ((size << sizebits) < PAGE_SIZE); //一页中有多少个block
 
-	index = block >> sizebits;
+	index = block >> sizebits; //页索引号
 
 	/*
 	 * Check for a block which wants to lie outside our maximum possible
@@ -1100,11 +1110,12 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 	for (;;) {
 		struct buffer_head *bh;
 		int ret;
-
+		/*a1.从page 中查找buffer_head*/
 		bh = __find_get_block(bdev, block, size);
 		if (bh)
 			return bh;
 
+		/*a2.创建buffer_head*/
 		ret = grow_buffers(bdev, block, size, gfp);
 		if (ret < 0)
 			return NULL;
@@ -1237,6 +1248,7 @@ static struct buffer_head *__bread_slow(struct buffer_head *bh)
 		unlock_buffer(bh);
 		return bh;
 	} else {
+		/*提交buffer_head的bio,直到数据可用 即同步读取磁盘数据*/
 		get_bh(bh);
 		bh->b_end_io = end_buffer_read_sync;
 		submit_bh(REQ_OP_READ, 0, bh);
@@ -1330,6 +1342,7 @@ lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 		if (bh && bh->b_blocknr == block && bh->b_bdev == bdev &&
 		    bh->b_size == size) {
 			if (i) {
+				//0~i-1向后移一位
 				while (i) {
 					__this_cpu_write(bh_lrus.bhs[i],
 						__this_cpu_read(bh_lrus.bhs[i - 1]));
@@ -1354,15 +1367,17 @@ lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 struct buffer_head *
 __find_get_block(struct block_device *bdev, sector_t block, unsigned size)
 {
+	/*a1.从cpu's LRU列表中查找*/
 	struct buffer_head *bh = lookup_bh_lru(bdev, block, size);
 
 	if (bh == NULL) {
 		/* __find_get_block_slow will mark the page accessed */
+		/*a2.从page cache中的buffer_head列表中查找*/
 		bh = __find_get_block_slow(bdev, block);
 		if (bh)
-			bh_lru_install(bh);
+			bh_lru_install(bh); //将其插入到cpu's LRU列表中
 	} else
-		touch_buffer(bh);
+		touch_buffer(bh); //标记页可访问
 
 	return bh;
 }
@@ -1380,9 +1395,11 @@ struct buffer_head *
 __getblk_gfp(struct block_device *bdev, sector_t block,
 	     unsigned size, gfp_t gfp)
 {
+	/*a1.快速查找block对应的buffer_head*/
 	struct buffer_head *bh = __find_get_block(bdev, block, size);
 
 	might_sleep();
+	/*a2.创建block对应的buffer_head*/
 	if (bh == NULL)
 		bh = __getblk_slow(bdev, block, size, gfp);
 	return bh;
@@ -1418,8 +1435,10 @@ struct buffer_head *
 __bread_gfp(struct block_device *bdev, sector_t block,
 		   unsigned size, gfp_t gfp)
 {
+	/*a1.获取buffer_head*/
 	struct buffer_head *bh = __getblk_gfp(bdev, block, size, gfp);
 
+	/*a2.若buffer_head中无有效数据,则从磁盘同步*/
 	if (likely(bh) && !buffer_uptodate(bh))
 		bh = __bread_slow(bh);
 	return bh;
