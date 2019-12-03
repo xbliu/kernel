@@ -1592,13 +1592,22 @@ EXPORT_SYMBOL(d_invalidate);
  * available. On a success the dentry is returned. The name passed in is
  * copied and the copy passed in may be reused after this call.
  */
- 
+/*
+刚分配时dentry相关状态为
+dentry->d_lockref.count = 1;
+dentry->d_flags = 0;
+dentry->d_inode = NULL;
+dentry->d_parent = dentry;
+dentry->d_sb = sb;
+dentry->d_op = NULL;
+*/
 struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 {
 	struct dentry *dentry;
 	char *dname;
 	int err;
 
+    /*a1.分配dentry*/
 	dentry = kmem_cache_alloc(dentry_cache, GFP_KERNEL);
 	if (!dentry)
 		return NULL;
@@ -1609,6 +1618,16 @@ struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 	 * will still always have a NUL at the end, even if we might
 	 * be overwriting an internal NUL character
 	 */
+    /*
+    a2.复制dentry的名字 
+    { 
+        1)若name为空则d_iname为'/'(根目录)
+        2)若name->len <= DNAME_INLINE_LEN-1,使用d_iname来复制
+        3)若name->len >DNAME_INLINE_LEN-1,重新分配空间来复制
+        无论是新分配空间还是d_iname最后都指向d_name.name.
+        <DNAME_INLINE_LEN-1字符长度以内使用预先分配的空间,否则重新分配空间>
+    } 
+    */
 	dentry->d_iname[DNAME_INLINE_LEN-1] = 0;
 	if (unlikely(!name)) {
 		name = &slash_name;
@@ -1639,12 +1658,13 @@ struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 	smp_wmb();
 	dentry->d_name.name = dname;
 
+    /*a3.dentry一些初始化*/
 	dentry->d_lockref.count = 1;
 	dentry->d_flags = 0;
 	spin_lock_init(&dentry->d_lock);
 	seqcount_init(&dentry->d_seq);
 	dentry->d_inode = NULL;
-	dentry->d_parent = dentry;
+	dentry->d_parent = dentry; //指向自已
 	dentry->d_sb = sb;
 	dentry->d_op = NULL;
 	dentry->d_fsdata = NULL;
@@ -1655,6 +1675,7 @@ struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 	INIT_LIST_HEAD(&dentry->d_child);
 	d_set_d_op(dentry, dentry->d_sb->s_d_op);
 
+    /*a4.d_op->d_init进行私有初始化操作*/
 	if (dentry->d_op && dentry->d_op->d_init) {
 		err = dentry->d_op->d_init(dentry);
 		if (err) {
@@ -1681,6 +1702,7 @@ struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
  */
 struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)
 {
+    /*a1.获取dentry*/
 	struct dentry *dentry = __d_alloc(parent->d_sb, name);
 	if (!dentry)
 		return NULL;
@@ -1691,6 +1713,7 @@ struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)
 	 * to concurrency here
 	 */
 	__dget_dlock(parent);
+    /*a2.将dentry加入到父dentry的d_subdirs列表中*/
 	dentry->d_parent = parent;
 	list_add(&dentry->d_child, &parent->d_subdirs);
 	spin_unlock(&parent->d_lock);

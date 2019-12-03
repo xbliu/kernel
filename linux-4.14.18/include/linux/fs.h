@@ -579,7 +579,7 @@ struct inode {
 	struct posix_acl	*i_default_acl;
 #endif
 
-	const struct inode_operations	*i_op;
+	const struct inode_operations	*i_op; //索引节点操作
 	struct super_block	*i_sb;
 	struct address_space	*i_mapping;
 
@@ -588,7 +588,7 @@ struct inode {
 #endif
 
 	/* Stat data, not accessed from path walking */
-	unsigned long		i_ino;
+	unsigned long		i_ino; //索引节点号
 	/*
 	 * Filesystems may only read i_nlink directly.  They shall use the
 	 * following functions for modification:
@@ -597,7 +597,7 @@ struct inode {
 	 *    inode_(inc|dec)_link_count
 	 */
 	union {
-		const unsigned int i_nlink;
+		const unsigned int i_nlink; //硬链接数目
 		unsigned int __i_nlink;
 	};
 	dev_t			i_rdev;
@@ -640,7 +640,7 @@ struct inode {
 		struct rcu_head		i_rcu;
 	};
 	u64			i_version;
-	atomic_t		i_count;
+	atomic_t		i_count; //引用计数器
 	atomic_t		i_dio_count;
 	atomic_t		i_writecount;
 #ifdef CONFIG_IMA

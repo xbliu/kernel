@@ -87,35 +87,40 @@ extern struct dentry_stat_t dentry_stat;
 
 #define d_lock	d_lockref.lock
 
+/*
+hard link:只建立目录中的目录项,而对应的文件的inode则共用 
+soft link:不只建立目录中的目录项,且建立文件对应的inode,只不过inode对应的数据为指向源文件的字符串而已. 
+dentry与inode、dentry与super_block都是多对一的关系 
+*/
 struct dentry {
 	/* RCU lookup touched fields */
-	unsigned int d_flags;		/* protected by d_lock */
+	unsigned int d_flags;		/* protected by d_lock dentry状态位*/
 	seqcount_t d_seq;		/* per dentry seqlock */
 	struct hlist_bl_node d_hash;	/* lookup hash list */
-	struct dentry *d_parent;	/* parent directory */
-	struct qstr d_name;
+	struct dentry *d_parent;	/* parent directory 父目录的目录项*/
+	struct qstr d_name;      //该结构体中存放着目录项名的长度,目录项名对应的哈希值和目录项名(可快速查找),这个主要是用于路径查询的时候来存放中间查询值 
 	struct inode *d_inode;		/* Where the name belongs to - NULL is
-					 * negative */
-	unsigned char d_iname[DNAME_INLINE_LEN];	/* small names */
+					 * negative  目录项对应的inode*/
+	unsigned char d_iname[DNAME_INLINE_LEN];	/* small names 短文件名*/
 
 	/* Ref lookup also touches following */
-	struct lockref d_lockref;	/* per-dentry lock and refcount */
-	const struct dentry_operations *d_op;
+	struct lockref d_lockref;	/* per-dentry lock and refcount 自旋锁及引用计数*/
+	const struct dentry_operations *d_op; //文件系统的超级块
 	struct super_block *d_sb;	/* The root of the dentry tree */
-	unsigned long d_time;		/* used by d_revalidate */
+	unsigned long d_time;		/* used by d_revalidate 最近使用的时间*/
 	void *d_fsdata;			/* fs-specific data */
 
 	union {
 		struct list_head d_lru;		/* LRU list */
 		wait_queue_head_t *d_wait;	/* in-lookup ones only */
 	};
-	struct list_head d_child;	/* child of parent list */
-	struct list_head d_subdirs;	/* our children */
+	struct list_head d_child;	/* child of parent list 父目录的子目录项所形成的链表*/
+	struct list_head d_subdirs;	/* our children 该目录项的子目录所形成的链表*/
 	/*
 	 * d_alias and d_rcu can share memory
 	 */
 	union {
-		struct hlist_node d_alias;	/* inode alias list */
+		struct hlist_node d_alias;	/* inode alias list 索引节点别名的链表,也就是连接到同一个inode对象的所有的dentry对象组成的一个队列*/
 		struct hlist_bl_node d_in_lookup_hash;	/* only for in-lookup ones */
 	 	struct rcu_head d_rcu;
 	} d_u;
