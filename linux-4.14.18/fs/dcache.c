@@ -470,8 +470,13 @@ static void dentry_lru_add(struct dentry *dentry)
  *
  * __d_drop requires dentry->d_lock.
  */
+ /*
+ d_drop dcache中已移除
+ d_delete dcache中仍存在,只不过状态为negative
+*/
 void __d_drop(struct dentry *dentry)
 {
+	/*从哈希表(dcache)中移除*/
 	if (!d_unhashed(dentry)) {
 		struct hlist_bl_head *b;
 		/*
@@ -2195,15 +2200,16 @@ seqretry:
 		 * we are still guaranteed NUL-termination of ->d_name.name.
 		 */
 		seq = raw_seqcount_begin(&dentry->d_seq);
-		if (dentry->d_parent != parent)
+		if (dentry->d_parent != parent) //父目录项是否相同
 			continue;
-		if (d_unhashed(dentry))
+		if (d_unhashed(dentry)) //未入哈希表中
 			continue;
-
+		
+		/*若标志DCACHE_OP_COMPARE 则实现了自已的dentry比较*/
 		if (unlikely(parent->d_flags & DCACHE_OP_COMPARE)) {
 			int tlen;
 			const char *tname;
-			if (dentry->d_name.hash != hashlen_hash(hashlen))
+			if (dentry->d_name.hash != hashlen_hash(hashlen)) //哈希值是否相同
 				continue;
 			tlen = dentry->d_name.len;
 			tname = dentry->d_name.name;
@@ -2213,12 +2219,12 @@ seqretry:
 				goto seqretry;
 			}
 			if (parent->d_op->d_compare(dentry,
-						    tlen, tname, name) != 0)
+						    tlen, tname, name) != 0) //目录项比较
 				continue;
 		} else {
-			if (dentry->d_name.hash_len != hashlen)
+			if (dentry->d_name.hash_len != hashlen) //哈希长度比较
 				continue;
-			if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0)
+			if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0) //名字比较
 				continue;
 		}
 		*seqp = seq;
@@ -2268,6 +2274,12 @@ EXPORT_SYMBOL(d_lookup);
  *
  * __d_lookup callers must be commented.
  */
+ /*
+ 哈希表三大关键元素:
+ 1)哈希表入口
+ 2)哈希散列函数
+ 3)哈希冲突解决办法
+*/
 struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 {
 	unsigned int hash = name->hash;
@@ -2297,22 +2309,23 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 	 * See Documentation/filesystems/path-lookup.txt for more details.
 	 */
 	rcu_read_lock();
-	
+
+	/*从哈希表的散列地址中取出dentry一一比较*/
 	hlist_bl_for_each_entry_rcu(dentry, node, b, d_hash) {
 
-		if (dentry->d_name.hash != hash)
+		if (dentry->d_name.hash != hash) //hash值是否相等
 			continue;
 
 		spin_lock(&dentry->d_lock);
-		if (dentry->d_parent != parent)
+		if (dentry->d_parent != parent) //父目项是否相同
 			goto next;
-		if (d_unhashed(dentry))
-			goto next;
-
-		if (!d_same_name(dentry, parent, name))
+		if (d_unhashed(dentry)) //未入哈希表中
 			goto next;
 
-		dentry->d_lockref.count++;
+		if (!d_same_name(dentry, parent, name)) //名字是否相同
+			goto next;
+
+		dentry->d_lockref.count++; //引用增加
 		found = dentry;
 		spin_unlock(&dentry->d_lock);
 		break;
@@ -2368,6 +2381,11 @@ EXPORT_SYMBOL(d_hash_and_lookup);
  * Turn the dentry into a negative dentry if possible, otherwise
  * remove it from the hash queues so it can be deleted later
  */
+ /*
+ 文件被删除,有以下选项:
+ 1)将dentry变为negative状态
+ 2)从哈希表中移除并释放
+*/
  
 void d_delete(struct dentry * dentry)
 {
@@ -2380,6 +2398,10 @@ again:
 	spin_lock(&dentry->d_lock);
 	inode = dentry->d_inode;
 	isdir = S_ISDIR(inode->i_mode);
+	/*
+	a1.只有当前进程在用则释放dentry关联的inode
+	(转变成negative dentry)返回
+	*/
 	if (dentry->d_lockref.count == 1) {
 		if (!spin_trylock(&inode->i_lock)) {
 			spin_unlock(&dentry->d_lock);
@@ -2392,6 +2414,7 @@ again:
 		return;
 	}
 
+	/*a2.从哈希表中移除(多个进程在用)*/
 	if (!d_unhashed(dentry))
 		__d_drop(dentry);
 
@@ -2473,6 +2496,7 @@ retry:
 	rcu_read_lock();
 	seq = smp_load_acquire(&parent->d_inode->i_dir_seq) & ~1;
 	r_seq = read_seqbegin(&rename_lock);
+	/*a1.从dcache中查找是否已存在相同的dentry,有则释放new alloc的dentry <快速查找>*/
 	dentry = __d_lookup_rcu(parent, name, &d_seq);
 	if (unlikely(dentry)) {
 		if (!lockref_get_not_dead(&dentry->d_lockref)) {
@@ -2505,6 +2529,7 @@ retry:
 	 * we unlock the chain.  All fields are stable in everything
 	 * we encounter.
 	 */
+	/*a2.从d_in_lookup_hash中查找是否存在同样的dentry <防止多进程并行操作 慢速查找>*/ 
 	hlist_bl_for_each_entry(dentry, node, b, d_u.d_in_lookup_hash) {
 		if (dentry->d_name.hash != hash)
 			continue;
@@ -2525,7 +2550,7 @@ retry:
 		 * wait for them to finish
 		 */
 		spin_lock(&dentry->d_lock);
-		d_wait_lookup(dentry);
+		d_wait_lookup(dentry); //存在则等待
 		/*
 		 * it's not in-lookup anymore; in principle we should repeat
 		 * everything from dcache lookup, but it's likely to be what
@@ -2547,9 +2572,10 @@ retry:
 	}
 	rcu_read_unlock();
 	/* we can't take ->d_lock here; it's OK, though. */
+	/*a3.加入到d_in_lookup_hash中表明将要进行慢速查找或者慢速查找中*/
 	new->d_flags |= DCACHE_PAR_LOOKUP;
 	new->d_wait = wq;
-	hlist_bl_add_head_rcu(&new->d_u.d_in_lookup_hash, b);
+	hlist_bl_add_head_rcu(&new->d_u.d_in_lookup_hash, b); //加入到d_in_lookup_hash表中
 	hlist_bl_unlock(b);
 	return new;
 mismatch:
@@ -2559,6 +2585,9 @@ mismatch:
 }
 EXPORT_SYMBOL(d_alloc_parallel);
 
+/*
+清除慢速查找标志,从d_in_lookup_hash哈希表中移除并唤醒等待的进程
+*/
 void __d_lookup_done(struct dentry *dentry)
 {
 	struct hlist_bl_head *b = in_lookup_hash(dentry->d_parent,
@@ -2581,11 +2610,13 @@ static inline void __d_add(struct dentry *dentry, struct inode *inode)
 	struct inode *dir = NULL;
 	unsigned n;
 	spin_lock(&dentry->d_lock);
+	/*a1.标志慢速查找已完成:d_add被一些文件系统中的lookup调用,lookup之前DCACHE_PAR_LOOKUP已置位*/
 	if (unlikely(d_in_lookup(dentry))) {
 		dir = dentry->d_parent->d_inode;
 		n = start_dir_add(dir);
 		__d_lookup_done(dentry);
 	}
+	/*a2.更新dentry的d_flags,加入到indoe的i_dentry列表中(一个inode可能对应多个dentry 硬链接)*/
 	if (inode) {
 		unsigned add_flags = d_flags_for_inode(inode);
 		hlist_add_head(&dentry->d_u.d_alias, &inode->i_dentry);
@@ -2594,6 +2625,7 @@ static inline void __d_add(struct dentry *dentry, struct inode *inode)
 		raw_write_seqcount_end(&dentry->d_seq);
 		fsnotify_update_flags(dentry);
 	}
+	/*a3.加入到哈希表中*/
 	__d_rehash(dentry);
 	if (dir)
 		end_dir_add(dir, n);

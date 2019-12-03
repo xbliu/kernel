@@ -1672,7 +1672,7 @@ static struct dentry *lookup_slow(const struct qstr *name,
 	if (unlikely(IS_DEADDIR(inode)))
 		goto out;
 again:
-    /*a1.分醒dentry,设置DCACHE_PAR_LOOKUP(正在查找中,防止发起两次慢速查找)*/
+    /*a1.分配dentry,设置DCACHE_PAR_LOOKUP(正在查找中,防止发起两次慢速查找)*/
 	dentry = d_alloc_parallel(dir, name, &wq);
 	if (IS_ERR(dentry))
 		goto out;

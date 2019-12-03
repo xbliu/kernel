@@ -105,8 +105,8 @@ struct dentry {
 
 	/* Ref lookup also touches following */
 	struct lockref d_lockref;	/* per-dentry lock and refcount 自旋锁及引用计数*/
-	const struct dentry_operations *d_op; //文件系统的超级块
-	struct super_block *d_sb;	/* The root of the dentry tree */
+	const struct dentry_operations *d_op; 
+	struct super_block *d_sb;	/* The root of the dentry tree 文件系统的超级块 */
 	unsigned long d_time;		/* used by d_revalidate 最近使用的时间*/
 	void *d_fsdata;			/* fs-specific data */
 
