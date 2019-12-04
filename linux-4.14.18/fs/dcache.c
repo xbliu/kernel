@@ -555,19 +555,23 @@ static void __dentry_kill(struct dentry *dentry)
 	/*
 	 * The dentry is now unrecoverably dead to the world.
 	 */
+    /*a1.标记dentry将要销毁*/
 	lockref_mark_dead(&dentry->d_lockref);
 
 	/*
 	 * inform the fs via d_prune that this dentry is about to be
 	 * unhashed and destroyed.
 	 */
+    /*a2.通知fs dentry将要从hash表中移除与销毁*/
 	if (dentry->d_flags & DCACHE_OP_PRUNE)
 		dentry->d_op->d_prune(dentry);
 
+    /*a3.若没有在shrink列表中,则从LRU表中移除*/
 	if (dentry->d_flags & DCACHE_LRU_LIST) {
 		if (!(dentry->d_flags & DCACHE_SHRINK_LIST))
 			d_lru_del(dentry);
 	}
+    /*a4.从hash表与dentry tree中移除*/
 	/* if it was on the hash then remove it */
 	__d_drop(dentry);
 	dentry_unlist(dentry, parent);
@@ -578,9 +582,11 @@ static void __dentry_kill(struct dentry *dentry)
 	else
 		spin_unlock(&dentry->d_lock);
 	this_cpu_dec(nr_dentry);
+    /*a5.私有释放处理*/
 	if (dentry->d_op && dentry->d_op->d_release)
 		dentry->d_op->d_release(dentry);
 
+    /*a6.若未在shrink列表中则释放,否则标记DCACHE_MAY_FREE等待内存回收*/
 	spin_lock(&dentry->d_lock);
 	if (dentry->d_flags & DCACHE_SHRINK_LIST) {
 		dentry->d_flags |= DCACHE_MAY_FREE;
@@ -806,6 +812,8 @@ repeat:
 
 	WARN_ON(d_in_lookup(dentry));
 
+    /*a1.unhashed,DCACHE_DISCONNECTED,DCACHE_OP_DELETE 
+      三类情况直接销毁*/
 	/* Unreachable? Get rid of it */
 	if (unlikely(d_unhashed(dentry)))
 		goto kill_it;
@@ -818,6 +826,7 @@ repeat:
 			goto kill_it;
 	}
 
+    /*a2.加入到lru列表中*/
 	dentry_lru_add(dentry);
 
 	dentry->d_lockref.count--;
@@ -905,6 +914,10 @@ static struct dentry *__d_find_alias(struct inode *inode)
 
 again:
 	discon_alias = NULL;
+    /*
+    1)inode已有入哈希表队列的别名或者inode是目录且有别名,则返回别名否则NULL 
+    2)在符合1的情况下,别名为根目录且DCACHE_DISCONNECTED(不在dentry 树中),则优先选取其它别名. 
+    */
 	hlist_for_each_entry(alias, &inode->i_dentry, d_u.d_alias) {
 		spin_lock(&alias->d_lock);
  		if (S_ISDIR(inode->i_mode) || !d_unhashed(alias)) {
@@ -919,6 +932,8 @@ again:
 		}
 		spin_unlock(&alias->d_lock);
 	}
+
+    /*检测只有DISCONNECTED的根目录别名符合条件*/
 	if (discon_alias) {
 		alias = discon_alias;
 		spin_lock(&alias->d_lock);
@@ -933,6 +948,7 @@ again:
 	return NULL;
 }
 
+/*根椐inode找目录项*/
 struct dentry *d_find_alias(struct inode *inode)
 {
 	struct dentry *de = NULL;
@@ -955,6 +971,7 @@ void d_prune_aliases(struct inode *inode)
 	struct dentry *dentry;
 restart:
 	spin_lock(&inode->i_lock);
+    /*释放此inode中无引用的dentry*/
 	hlist_for_each_entry(dentry, &inode->i_dentry, d_u.d_alias) {
 		spin_lock(&dentry->d_lock);
 		if (!dentry->d_lockref.count) {
@@ -988,12 +1005,14 @@ static void shrink_dentry_list(struct list_head *list)
 		 * to the LRU here, so we can simply remove it from the list
 		 * here regardless of whether it is referenced or not.
 		 */
+        /*a1.从dispose list中移除*/
 		d_shrink_del(dentry);
 
 		/*
 		 * We found an inuse dentry which was not removed from
 		 * the LRU because of laziness during lookup. Do not free it.
 		 */
+        /*由于lookup的延迟策略,dentry未从LRU中移除不释放*/
 		if (dentry->d_lockref.count > 0) {
 			spin_unlock(&dentry->d_lock);
 			if (parent)
@@ -1001,7 +1020,7 @@ static void shrink_dentry_list(struct list_head *list)
 			continue;
 		}
 
-
+        /*已标记DCACHE_DENTRY_KILLED,由DCACHE_MAY_FREE决定立即释放或稍后释放*/
 		if (unlikely(dentry->d_flags & DCACHE_DENTRY_KILLED)) {
 			bool can_free = dentry->d_flags & DCACHE_MAY_FREE;
 			spin_unlock(&dentry->d_lock);
@@ -1012,6 +1031,7 @@ static void shrink_dentry_list(struct list_head *list)
 			continue;
 		}
 
+        /*获取不到inode锁,重新放入dispose list*/
 		inode = dentry->d_inode;
 		if (inode && unlikely(!spin_trylock(&inode->i_lock))) {
 			d_shrink_add(dentry, list);
@@ -1021,6 +1041,7 @@ static void shrink_dentry_list(struct list_head *list)
 			continue;
 		}
 
+        /*释放dentry*/
 		__dentry_kill(dentry);
 
 		/*
@@ -1029,9 +1050,15 @@ static void shrink_dentry_list(struct list_head *list)
 		 * expected to be beneficial in reducing dentry cache
 		 * fragmentation.
 		 */
+        /* 
+        缩减必要的父子体系: 
+          dentry被释放,其父目录项若只有它一个子项在dcache中,此时可以被释放,
+          可有效防止shrink_dcache_parent再次调用与内存碎片
+          */
 		dentry = parent;
 		while (dentry && !lockref_put_or_lock(&dentry->d_lockref)) {
 			parent = lock_parent(dentry);
+            /*dentry释放,父目录项引用自减*/
 			if (dentry->d_lockref.count != 1) {
 				dentry->d_lockref.count--;
 				spin_unlock(&dentry->d_lock);
@@ -1039,6 +1066,7 @@ static void shrink_dentry_list(struct list_head *list)
 					spin_unlock(&parent->d_lock);
 				break;
 			}
+            /*父目录项无引用,可以尝试一起释放*/
 			inode = dentry->d_inode;	/* can't be NULL */
 			if (unlikely(!spin_trylock(&inode->i_lock))) {
 				spin_unlock(&dentry->d_lock);
@@ -1168,11 +1196,12 @@ void shrink_dcache_sb(struct super_block *sb)
 
 	do {
 		LIST_HEAD(dispose);
-
+        /*a1.将s_dentry_lru中的dentry迁移最多1024到dispose列表*/
 		freed = list_lru_walk(&sb->s_dentry_lru,
 			dentry_lru_isolate_shrink, &dispose, 1024);
 
 		this_cpu_sub(nr_dentry_unused, freed);
+        /*a2.回收dispose列表中的dentry*/
 		shrink_dentry_list(&dispose);
 		cond_resched();
 	} while (list_lru_count(&sb->s_dentry_lru) > 0);
@@ -1229,8 +1258,9 @@ again:
 		break;
 	}
 repeat:
-	next = this_parent->d_subdirs.next;
+	next = this_parent->d_subdirs.next; //取父目录项下的下一个子项
 resume:
+    /*检查父目录项下所有子项是否有符合要求的*/
 	while (next != &this_parent->d_subdirs) {
 		struct list_head *tmp = next;
 		struct dentry *dentry = list_entry(tmp, struct dentry, d_child);
@@ -1256,6 +1286,7 @@ resume:
 			continue;
 		}
 
+        /*检查子项下所有的子项是否符合要求*/
 		if (!list_empty(&dentry->d_subdirs)) {
 			spin_unlock(&this_parent->d_lock);
 			spin_release(&dentry->d_lock.dep_map, 1, _RET_IP_);
@@ -1270,6 +1301,7 @@ resume:
 	 */
 	rcu_read_lock();
 ascend:
+    /*this_parent的所有子项已检查完,若不是最初的父目录,继续this_parent的兄弟的所有子项检查*/
 	if (this_parent != parent) {
 		struct dentry *child = this_parent;
 		this_parent = child->d_parent;
@@ -1283,9 +1315,9 @@ ascend:
 		/* go into the first sibling still alive */
 		do {
 			next = child->d_child.next;
-			if (next == &this_parent->d_subdirs)
+			if (next == &this_parent->d_subdirs) //兄弟项已搜索完,向上继续搜集
 				goto ascend;
-			child = list_entry(next, struct dentry, d_child);
+			child = list_entry(next, struct dentry, d_child); //兄弟项
 		} while (unlikely(child->d_flags & DCACHE_DENTRY_KILLED));
 		rcu_read_unlock();
 		goto resume;
@@ -1412,9 +1444,11 @@ static enum d_walk_ret select_collect(void *_data, struct dentry *dentry)
 	struct select_data *data = _data;
 	enum d_walk_ret ret = D_WALK_CONTINUE;
 
+    /*a1.指定开始的dentry,继续搜集*/
 	if (data->start == dentry)
 		goto out;
 
+    /*a2.在LRU列表中,则将其移入到shrink列表中*/
 	if (dentry->d_flags & DCACHE_SHRINK_LIST) {
 		data->found++;
 	} else {
@@ -1430,6 +1464,7 @@ static enum d_walk_ret select_collect(void *_data, struct dentry *dentry)
 	 * ensures forward progress). We'll be coming back to find
 	 * the rest.
 	 */
+    /*shrink列表中有一些可以回收的dentry,可继续下一次搜集或退出*/
 	if (!list_empty(&data->dispose))
 		ret = need_resched() ? D_WALK_QUIT : D_WALK_NORETRY;
 out:
@@ -1450,11 +1485,13 @@ void shrink_dcache_parent(struct dentry *parent)
 		INIT_LIST_HEAD(&data.dispose);
 		data.start = parent;
 		data.found = 0;
-
+        
+        /*a1.查找父目录项中未使用的子目录项*/
 		d_walk(parent, &data, select_collect, NULL);
 		if (!data.found)
 			break;
 
+        /*a2.回收目录项*/
 		shrink_dentry_list(&data.dispose);
 		cond_resched();
 	}
@@ -1551,6 +1588,7 @@ void d_invalidate(struct dentry *dentry)
 	/*
 	 * If it's already been dropped, return OK.
 	 */
+    /*a1. 未在hash表中或Negative dentries 则说明dentry已无效*/
 	spin_lock(&dentry->d_lock);
 	if (d_unhashed(dentry)) {
 		spin_unlock(&dentry->d_lock);
@@ -1564,6 +1602,7 @@ void d_invalidate(struct dentry *dentry)
 		return;
 	}
 
+    /*通过缩减dentry子树中无效的dentry,detach 子树中的mountpoint dentry来使dentry无效*/
 	for (;;) {
 		struct detach_data data;
 
@@ -1846,7 +1885,7 @@ static void __d_instantiate(struct dentry *dentry, struct inode *inode)
 {
 	unsigned add_flags = d_flags_for_inode(inode);
 	WARN_ON(d_in_lookup(dentry));
-
+    /*dentry关联inode,negative dentries into productive*/
 	spin_lock(&dentry->d_lock);
 	hlist_add_head(&dentry->d_u.d_alias, &inode->i_dentry);
 	raw_write_seqcount_begin(&dentry->d_seq);
@@ -1965,10 +2004,12 @@ static struct dentry *__d_obtain_alias(struct inode *inode, int disconnected)
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
+    /*a1.查找现有的别名*/
 	res = d_find_any_alias(inode);
 	if (res)
 		goto out_iput;
 
+    /*a2.没有则分配一个*/
 	tmp = __d_alloc(inode->i_sb, NULL);
 	if (!tmp) {
 		res = ERR_PTR(-ENOMEM);
@@ -1977,6 +2018,7 @@ static struct dentry *__d_obtain_alias(struct inode *inode, int disconnected)
 
 	security_d_instantiate(tmp, inode);
 	spin_lock(&inode->i_lock);
+    /*a3.再次查找 <考虑到进程并行>*/
 	res = __d_find_any_alias(inode);
 	if (res) {
 		spin_unlock(&inode->i_lock);
@@ -1988,9 +2030,10 @@ static struct dentry *__d_obtain_alias(struct inode *inode, int disconnected)
 	add_flags = d_flags_for_inode(inode);
 
 	if (disconnected)
-		add_flags |= DCACHE_DISCONNECTED;
+		add_flags |= DCACHE_DISCONNECTED; //标志未加入到dentry tree中(没有体现目录的树型结构)
 
 	spin_lock(&tmp->d_lock);
+    /*加入文件系统超级块中s_anon(匿名)哈希表中*/
 	__d_set_inode_and_type(tmp, inode, add_flags);
 	hlist_add_head(&tmp->d_u.d_alias, &inode->i_dentry);
 	hlist_bl_lock(&tmp->d_sb->s_anon);
@@ -2067,6 +2110,7 @@ EXPORT_SYMBOL(d_obtain_root);
  * If no entry exists with the exact case name, allocate new dentry with
  * the exact case, and return the spliced entry.
  */
+/*对大小不敏感的文件系统(比如ntfs),将大小写不敏感的文件名加入到dentry*/
 struct dentry *d_add_ci(struct dentry *dentry, struct inode *inode,
 			struct qstr *name)
 {
@@ -2670,6 +2714,7 @@ struct dentry *d_exact_alias(struct dentry *entry, struct inode *inode)
 	unsigned int hash = entry->d_name.hash;
 
 	spin_lock(&inode->i_lock);
+    /*inode中有相同的未入哈希表的dentry,则入哈希表并返回它,否则返回NULL*/
 	hlist_for_each_entry(alias, &inode->i_dentry, d_u.d_alias) {
 		/*
 		 * Don't need alias->d_lock here, because aliases with
@@ -2859,10 +2904,12 @@ static void __d_move(struct dentry *dentry, struct dentry *target,
 	if (!dentry->d_inode)
 		printk(KERN_WARNING "VFS: moving negative dcache entry\n");
 
+    /*dentry与target 没有祖先关系(隔代或直属父子关系)*/
 	BUG_ON(d_ancestor(dentry, target));
 	BUG_ON(d_ancestor(target, dentry));
 
 	dentry_lock_for_move(dentry, target);
+    /*a0.结束慢速查找*/
 	if (unlikely(d_in_lookup(target))) {
 		dir = target->d_parent->d_inode;
 		n = start_dir_add(dir);
@@ -2874,21 +2921,29 @@ static void __d_move(struct dentry *dentry, struct dentry *target,
 
 	/* unhash both */
 	/* __d_drop does write_seqcount_barrier, but they're OK to nest. */
+    /*a1.从哈希表中移除*/
 	__d_drop(dentry);
 	__d_drop(target);
 
 	/* Switch the names.. */
+    /*a2.切换名字*/
 	if (exchange)
 		swap_names(dentry, target);
 	else
 		copy_name(dentry, target);
 
 	/* rehash in new place(s) */
+    /*a3.重新加入到哈希表中*/
 	__d_rehash(dentry);
 	if (exchange)
 		__d_rehash(target);
 
 	/* ... and switch them in the tree */
+    /*
+    a4.修改树关系 
+    1)detry根目录:target切换为根目录,dentry切换到target的父目录的子项列表中
+    2)detry非根目录:将各自切换到对方的父目录的子项列表中
+    */
 	if (IS_ROOT(dentry)) {
 		/* splicing a tree */
 		dentry->d_flags |= DCACHE_RCUACCESS;
@@ -3042,12 +3097,14 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 
 	security_d_instantiate(dentry, inode);
 	spin_lock(&inode->i_lock);
+    /*a1.目录不能有多个别名(不能硬链接)*/
 	if (S_ISDIR(inode->i_mode)) {
 		struct dentry *new = __d_find_any_alias(inode);
 		if (unlikely(new)) {
 			/* The reference to new ensures it remains an alias */
 			spin_unlock(&inode->i_lock);
 			write_seqlock(&rename_lock);
+            /*1.在父子体系中,不能加入*/
 			if (unlikely(d_ancestor(new, dentry))) {
 				write_sequnlock(&rename_lock);
 				dput(new);
@@ -3059,6 +3116,7 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 					inode->i_sb->s_type->name,
 					inode->i_sb->s_id);
 			} else if (!IS_ROOT(new)) {
+                /*2.非根目录,重命名new dentry*/
 				int err = __d_unalias(inode, dentry, new);
 				write_sequnlock(&rename_lock);
 				if (err) {
@@ -3066,6 +3124,7 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 					new = ERR_PTR(err);
 				}
 			} else {
+                /*3.根目录 重命名*/
 				__d_move(new, dentry, false);
 				write_sequnlock(&rename_lock);
 			}
@@ -3074,6 +3133,7 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 		}
 	}
 out:
+    /*a2.常规文件dentry加入到dentry tree中*/
 	__d_add(dentry, inode);
 	return NULL;
 }
