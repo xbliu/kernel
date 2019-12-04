@@ -1151,6 +1151,7 @@ static enum lru_status dentry_lru_isolate(struct list_head *item,
  * This function may fail to free any resources if all the dentries are in
  * use.
  */
+/*superblock shrinker 回收dcache*/
 long prune_dcache_sb(struct super_block *sb, struct shrink_control *sc)
 {
 	LIST_HEAD(dispose);
