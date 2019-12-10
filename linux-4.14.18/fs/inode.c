@@ -132,6 +132,9 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	static const struct file_operations no_open_fops = {.open = no_open};
 	struct address_space *const mapping = &inode->i_data;
 
+	/*所属superblock、blkbits(块大小所占位数)、
+	inode operation(i_op)、file operation(i_fop)、address space operation(a_ops)
+	*/
 	inode->i_sb = sb;
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_flags = 0;
@@ -204,6 +207,7 @@ static struct inode *alloc_inode(struct super_block *sb)
 {
 	struct inode *inode;
 
+	/*a1.分配inode:自定义分配与通用分配两种方式*/
 	if (sb->s_op->alloc_inode)
 		inode = sb->s_op->alloc_inode(sb);
 	else
@@ -212,6 +216,7 @@ static struct inode *alloc_inode(struct super_block *sb)
 	if (!inode)
 		return NULL;
 
+	/*a2.初始化inode:不成功销毁也分自定义与通用两种方式*/
 	if (unlikely(inode_init_always(sb, inode))) {
 		if (inode->i_sb->s_op->destroy_inode)
 			inode->i_sb->s_op->destroy_inode(inode);
@@ -539,6 +544,7 @@ static void evict(struct inode *inode)
 	if (!list_empty(&inode->i_io_list))
 		inode_io_list_del(inode);
 
+	/*a1.从superblock s_inodes列表中移除*/
 	inode_sb_list_del(inode);
 
 	/*
@@ -547,6 +553,7 @@ static void evict(struct inode *inode)
 	 * the inode has I_FREEING set, flusher thread won't start new work on
 	 * the inode.  We just have to wait for running writeback to finish.
 	 */
+	/*a2.等待回写完成*/
 	inode_wait_for_writeback(inode);
 
 	if (op->evict_inode) {
@@ -560,6 +567,7 @@ static void evict(struct inode *inode)
 	if (S_ISCHR(inode->i_mode) && inode->i_cdev)
 		cd_forget(inode);
 
+	/*a3.从inode_hashtable移除*/
 	remove_inode_hash(inode);
 
 	spin_lock(&inode->i_lock);
@@ -567,6 +575,7 @@ static void evict(struct inode *inode)
 	BUG_ON(inode->i_state != (I_FREEING | I_CLEAR));
 	spin_unlock(&inode->i_lock);
 
+	/*a4.销毁inode*/
 	destroy_inode(inode);
 }
 
@@ -605,6 +614,7 @@ void evict_inodes(struct super_block *sb)
 	LIST_HEAD(dispose);
 
 again:
+	/*移除superblock s_inodes列表中引用计数为0且状态不为I_NEW | I_FREEING | I_WILL_FREE的inode*/
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry_safe(inode, next, &sb->s_inodes, i_sb_list) {
 		if (atomic_read(&inode->i_count))
@@ -617,7 +627,7 @@ again:
 		}
 
 		inode->i_state |= I_FREEING;
-		inode_lru_list_del(inode);
+		inode_lru_list_del(inode); //从superblock的s_inode_lru中移除
 		spin_unlock(&inode->i_lock);
 		list_add(&inode->i_lru, &dispose);
 
@@ -918,7 +928,7 @@ struct inode *new_inode(struct super_block *sb)
 
 	inode = new_inode_pseudo(sb);
 	if (inode)
-		inode_sb_list_add(inode);
+		inode_sb_list_add(inode); //加入到所属super block的inodes列表中
 	return inode;
 }
 EXPORT_SYMBOL(new_inode);
@@ -1103,6 +1113,7 @@ struct inode *iget_locked(struct super_block *sb, unsigned long ino)
 	struct hlist_head *head = inode_hashtable + hash(sb, ino);
 	struct inode *inode;
 again:
+	/*a1.从inode_hashtable 中查找*/
 	spin_lock(&inode_hash_lock);
 	inode = find_inode_fast(sb, head, ino);
 	spin_unlock(&inode_hash_lock);
@@ -1115,14 +1126,17 @@ again:
 		return inode;
 	}
 
+	/*a2.从inode_hashtable没有指定的inode,重新分配一个*/
 	inode = alloc_inode(sb);
 	if (inode) {
 		struct inode *old;
 
 		spin_lock(&inode_hash_lock);
 		/* We released the lock, so.. */
+		/*a3.再次inode_hashtable查找,防止在释放锁期间有其它用户创建*/
 		old = find_inode_fast(sb, head, ino);
 		if (!old) {
+			/*a3.1 新分配的inode,加入到inode_hashtable与superblock的s_inodes列表中*/
 			inode->i_ino = ino;
 			spin_lock(&inode->i_lock);
 			inode->i_state = I_NEW;
@@ -1142,6 +1156,7 @@ again:
 		 * us. Use the old inode instead of the one we just
 		 * allocated.
 		 */
+		/*a3.2 其它用户也正在创建inode,故只需等待其创建成功即可*/
 		spin_unlock(&inode_hash_lock);
 		destroy_inode(inode);
 		inode = old;
@@ -1382,7 +1397,7 @@ int insert_inode_locked(struct inode *inode)
 	struct super_block *sb = inode->i_sb;
 	ino_t ino = inode->i_ino;
 	struct hlist_head *head = inode_hashtable + hash(sb, ino);
-
+	/*从inode_hashtable中查找,未查找到则加入到inode_hashtable中,否则增加引用计数*/
 	while (1) {
 		struct inode *old = NULL;
 		spin_lock(&inode_hash_lock);
@@ -1492,12 +1507,14 @@ static void iput_final(struct inode *inode)
 	else
 		drop = generic_drop_inode(inode);
 
+	/*a1.若文件系统是MS_ACTIVE<有效的>,则加入到lru列表中*/
 	if (!drop && (sb->s_flags & MS_ACTIVE)) {
 		inode_add_lru(inode);
 		spin_unlock(&inode->i_lock);
 		return;
 	}
 
+	/*a2.销毁inode之前将inode数据同步到磁盘*/
 	if (!drop) {
 		inode->i_state |= I_WILL_FREE;
 		spin_unlock(&inode->i_lock);
@@ -1507,11 +1524,13 @@ static void iput_final(struct inode *inode)
 		inode->i_state &= ~I_WILL_FREE;
 	}
 
+	/*a3.标记释放中*/
 	inode->i_state |= I_FREEING;
 	if (!list_empty(&inode->i_lru))
 		inode_lru_list_del(inode);
 	spin_unlock(&inode->i_lock);
 
+	/*a4.free inode*/
 	evict(inode);
 }
 
@@ -1973,6 +1992,7 @@ void __init inode_init(void)
 					0);
 }
 
+/*初始化字符设备、块设备、pipe*/
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 {
 	inode->i_mode = mode;
