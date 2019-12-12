@@ -194,6 +194,7 @@ void __delete_from_page_cache(struct page *page, void *shadow)
 	 * invalidate any existing cleancache entries.  We can't leave
 	 * stale data around in the cleancache once our page is gone
 	 */
+    /*a1. cleancache操作  ????*/
 	if (PageUptodate(page) && PageMappedToDisk(page))
 		cleancache_put_page(page);
 	else
@@ -224,6 +225,7 @@ void __delete_from_page_cache(struct page *page, void *shadow)
 		}
 	}
 
+    /*a2.从page tree中删除*/
 	page_cache_tree_delete(mapping, page, shadow);
 
 	page->mapping = NULL;
@@ -273,6 +275,7 @@ void delete_from_page_cache(struct page *page)
 	freepage = mapping->a_ops->freepage;
 
 	spin_lock_irqsave(&mapping->tree_lock, flags);
+    /*a1.从page tree中移除*/
 	__delete_from_page_cache(page, NULL);
 	spin_unlock_irqrestore(&mapping->tree_lock, flags);
 
@@ -519,6 +522,7 @@ int filemap_write_and_wait(struct address_space *mapping)
 	int err = 0;
 
 	if (mapping_needs_writeback(mapping)) {
+        /*a1.回写整个文件的page cache*/
 		err = filemap_fdatawrite(mapping);
 		/*
 		 * Even if the above returned error, the pages may be
@@ -527,6 +531,7 @@ int filemap_write_and_wait(struct address_space *mapping)
 		 * thing (e.g. bug) happened, so we avoid waiting for it.
 		 */
 		if (err != -EIO) {
+            /*a2.等待整个文件的page cache回写完成*/
 			int err2 = filemap_fdatawait(mapping);
 			if (!err)
 				err = err2;
@@ -558,10 +563,12 @@ int filemap_write_and_wait_range(struct address_space *mapping,
 	int err = 0;
 
 	if (mapping_needs_writeback(mapping)) {
+        /*a1.发起页面回写*/
 		err = __filemap_fdatawrite_range(mapping, lstart, lend,
 						 WB_SYNC_ALL);
 		/* See comment of filemap_write_and_wait() */
 		if (err != -EIO) {
+            /*a2.等待区域内的page回写OK*/
 			int err2 = filemap_fdatawait_range(mapping,
 						lstart, lend);
 			if (!err)
@@ -703,11 +710,13 @@ int replace_page_cache_page(struct page *old, struct page *new, gfp_t gfp_mask)
 		pgoff_t offset = old->index;
 		freepage = mapping->a_ops->freepage;
 
+        /*a1.保存page的关键信息*/
 		get_page(new);
 		new->mapping = mapping;
 		new->index = offset;
 
 		spin_lock_irqsave(&mapping->tree_lock, flags);
+        /*a2.old page从page tree中删除,new page加入其中*/
 		__delete_from_page_cache(old, NULL);
 		error = page_cache_tree_insert(mapping, new, NULL);
 		BUG_ON(error);
@@ -757,11 +766,13 @@ static int __add_to_page_cache_locked(struct page *page,
 		return error;
 	}
 
+    /*a1.page关键信息保存*/
 	get_page(page);
 	page->mapping = mapping;
 	page->index = offset;
 
 	spin_lock_irq(&mapping->tree_lock);
+    /*a2.page加入到address space的page_tree<radio tree>中*/
 	error = page_cache_tree_insert(mapping, page, shadowp);
 	radix_tree_preload_end();
 	if (unlikely(error))
@@ -810,6 +821,7 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 	int ret;
 
 	__SetPageLocked(page);
+    /*a1.加入address space的page tree中<radix tree>*/
 	ret = __add_to_page_cache_locked(page, mapping, offset,
 					 gfp_mask, &shadow);
 	if (unlikely(ret))
@@ -823,18 +835,23 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 		 * data from the working set, only to cache data that will
 		 * get overwritten with something else, is a waste of memory.
 		 */
+        /*a2.设置page的active状态:                                      
+          page根椐是否可回收分为可回收与不可回收.
+          可回收的page lru可分为两类active与inactive,根椐用途(是否有back store)其下又分anon与file*/
 		if (!(gfp_mask & __GFP_WRITE) &&
 		    shadow && workingset_refault(shadow)) {
 			SetPageActive(page);
 			workingset_activation(page);
 		} else
 			ClearPageActive(page);
+        /*a3.加入lru列表(active,inactive)中*/
 		lru_cache_add(page);
 	}
 	return ret;
 }
 EXPORT_SYMBOL_GPL(add_to_page_cache_lru);
 
+/*smp架构分为NUMA,UMA,COMA. 所以分配的内存的时候优先分配访问速度快的内存(local node).*/
 #ifdef CONFIG_NUMA
 struct page *__page_cache_alloc(gfp_t gfp)
 {
@@ -1128,7 +1145,7 @@ void end_page_writeback(struct page *page)
 	 * justify taking an atomic operation penalty at the end of
 	 * ever page writeback.
 	 */
-	if (PageReclaim(page)) {
+	if (PageReclaim(page)) { //清除Reclaim,回写完成
 		ClearPageReclaim(page);
 		rotate_reclaimable_page(page);
 	}
@@ -1258,6 +1275,7 @@ pgoff_t page_cache_next_hole(struct address_space *mapping,
 {
 	unsigned long i;
 
+    /*从index开始向后扫描max_scan页,查找第一个不存在的page index*/
 	for (i = 0; i < max_scan; i++) {
 		struct page *page;
 
@@ -1299,6 +1317,7 @@ pgoff_t page_cache_prev_hole(struct address_space *mapping,
 {
 	unsigned long i;
 
+    /*从index开始向前扫描max_scan页,查找第一个不存在的page index*/
 	for (i = 0; i < max_scan; i++) {
 		struct page *page;
 
@@ -1496,7 +1515,7 @@ no_page:
 		if (fgp_flags & FGP_ACCESSED)
 			__SetPageReferenced(page);
 
-		/*b2.将page 加入到address space的tree中*/
+		/*b2.将page 加入到address space的tree中与lru列表中*/
 		err = add_to_page_cache_lru(page, mapping, offset,
 				gfp_mask & GFP_RECLAIM_MASK);
 		if (unlikely(err)) {
@@ -1708,6 +1727,7 @@ unsigned find_get_pages_contig(struct address_space *mapping, pgoff_t index,
 		return 0;
 
 	rcu_read_lock();
+    /*查找从index开始序号连续的nr_pages项page*/
 	radix_tree_for_each_contig(slot, &mapping->page_tree, &iter, index) {
 		struct page *head, *page;
 repeat:
@@ -1786,6 +1806,7 @@ unsigned find_get_pages_tag(struct address_space *mapping, pgoff_t *index,
 		return 0;
 
 	rcu_read_lock();
+    /*查找nr_pages项指定TAG的page*/
 	radix_tree_for_each_tagged(slot, &mapping->page_tree,
 				   &iter, *index, tag) {
 		struct page *head, *page;
@@ -1867,6 +1888,7 @@ unsigned find_get_entries_tag(struct address_space *mapping, pgoff_t start,
 		return 0;
 
 	rcu_read_lock();
+    /*从start开始搜索nr_entries项指定tag的page与其对应的index*/
 	radix_tree_for_each_tagged(slot, &mapping->page_tree,
 				   &iter, start, tag) {
 		struct page *head, *page;
@@ -2236,6 +2258,7 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 		loff_t size;
 
 		size = i_size_read(inode);
+        /*a1.将direct io范围内的page cache刷入磁盘*/
 		if (iocb->ki_flags & IOCB_NOWAIT) {
 			if (filemap_range_has_page(mapping, iocb->ki_pos,
 						   iocb->ki_pos + count - 1))
@@ -2250,11 +2273,13 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 		file_accessed(file);
 
+        /*a2.direct io读*/
 		retval = mapping->a_ops->direct_IO(iocb, iter);
 		if (retval >= 0) {
 			iocb->ki_pos += retval;
 			count -= retval;
 		}
+        /*a3.更新iov操作*/
 		iov_iter_revert(iter, count - iov_iter_count(iter));
 
 		/*
@@ -2697,8 +2722,10 @@ static struct page *do_read_cache_page(struct address_space *mapping,
 	struct page *page;
 	int err;
 repeat:
+    /*a1.查找index对应的page,未有则创建一个*/
 	page = find_get_page(mapping, index);
 	if (!page) {
+        /*b1.分配page 加入page caceh与lru列表*/
 		page = __page_cache_alloc(gfp | __GFP_COLD);
 		if (!page)
 			return ERR_PTR(-ENOMEM);
@@ -2712,17 +2739,21 @@ repeat:
 		}
 
 filler:
+        /*b2.填充数据到page中*/
 		err = filler(data, page);
 		if (err < 0) {
 			put_page(page);
 			return ERR_PTR(err);
 		}
 
+        /*b3.等待page unlocked,读取操作完成*/
 		page = wait_on_page_read(page);
 		if (IS_ERR(page))
 			return page;
 		goto out;
 	}
+
+    /*a2.数据已是最新无需从磁盘读取*/
 	if (PageUptodate(page))
 		goto out;
 
@@ -2757,6 +2788,7 @@ filler:
 	 * avoid spurious serialisations and wakeups when multiple processes
 	 * wait on the same page for IO to complete.
 	 */
+    /*a3.unlock之后再检查一遍数据,某些操作完成之后数据已同步*/
 	wait_on_page_locked(page);
 	if (PageUptodate(page))
 		goto out;
@@ -2776,6 +2808,7 @@ filler:
 		unlock_page(page);
 		goto out;
 	}
+    /*a4.page已准备OK,填充数据*/
 	goto filler;
 
 out:
@@ -2844,13 +2877,15 @@ inline ssize_t generic_write_checks(struct kiocb *iocb, struct iov_iter *from)
 
 	/* FIXME: this is for backwards compatibility with 2.4 */
 	if (iocb->ki_flags & IOCB_APPEND)
-		iocb->ki_pos = i_size_read(inode);
+		iocb->ki_pos = i_size_read(inode); //文件尾部开始添加内容,起始pos=文件的大小
 
 	pos = iocb->ki_pos;
 
+    /*IOCB_NOWAIT不能在direct io的情况下发生.direct io读写的是同步,所以会等待读写完成*/
 	if ((iocb->ki_flags & IOCB_NOWAIT) && !(iocb->ki_flags & IOCB_DIRECT))
 		return -EINVAL;
 
+    /*不能超过limit大小*/
 	if (limit != RLIM_INFINITY) {
 		if (iocb->ki_pos >= limit) {
 			send_sig(SIGXFSZ, current, 0);
@@ -2919,12 +2954,15 @@ generic_file_direct_write(struct kiocb *iocb, struct iov_iter *from)
 	write_len = iov_iter_count(from);
 	end = (pos + write_len - 1) >> PAGE_SHIFT;
 
+    /*a1.将[pos,pos + write_len - 1]之间的脏数据刷磁盘*/
 	if (iocb->ki_flags & IOCB_NOWAIT) {
 		/* If there are pages to writeback, return */
+        /*direct io操作范围有页面需回写,直接返回.因为NOWAIT.*/
 		if (filemap_range_has_page(inode->i_mapping, pos,
 					   pos + iov_iter_count(from)))
 			return -EAGAIN;
 	} else {
+        /*将direct io操作范围内的脏页回写刷入磁盘*/
 		written = filemap_write_and_wait_range(mapping, pos,
 							pos + write_len - 1);
 		if (written)
@@ -2937,6 +2975,8 @@ generic_file_direct_write(struct kiocb *iocb, struct iov_iter *from)
 	 * about to write.  We do this *before* the write so that we can return
 	 * without clobbering -EIOCBQUEUED from ->direct_IO().
 	 */
+    /*a2.将索引为[pos >> PAGE_SHIFT,end]之间的page cache移除(无效), 
+      避免direct io写后磁盘数据与page cache的数据不一致.*/
 	written = invalidate_inode_pages2_range(mapping,
 					pos >> PAGE_SHIFT, end);
 	/*
@@ -2949,6 +2989,7 @@ generic_file_direct_write(struct kiocb *iocb, struct iov_iter *from)
 		goto out;
 	}
 
+    /*a3.direct io写*/
 	written = mapping->a_ops->direct_IO(iocb, from);
 
 	/*
@@ -2964,13 +3005,16 @@ generic_file_direct_write(struct kiocb *iocb, struct iov_iter *from)
 	 * do not end up with dio_complete() being called, so let's not break
 	 * them by removing it completely
 	 */
+    /*a4.direct io过程中可能发生此范围内页面预读或mmap文件写,再次invalidate尽可能的保证数据一致*/
 	if (mapping->nrpages)
 		invalidate_inode_pages2_range(mapping,
 					pos >> PAGE_SHIFT, end);
 
+    /*a5.更新write pos、iov_iter*/
 	if (written > 0) {
 		pos += written;
 		write_len -= written;
+        /*inode的大小改变,标记为dirty inode*/
 		if (pos > i_size_read(inode) && !S_ISBLK(inode->i_mode)) {
 			i_size_write(inode, pos);
 			mark_inode_dirty(inode);
@@ -3141,6 +3185,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	if (iocb->ki_flags & IOCB_DIRECT) { //直接写
 		loff_t pos, endbyte;
 
+        /*b1.direct io写操作*/
 		written = generic_file_direct_write(iocb, from);
 		/*
 		 * If the write stopped short of completing, fall back to
@@ -3152,6 +3197,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		if (written < 0 || !iov_iter_count(from) || IS_DAX(inode))
 			goto out;
 
+        /*b2.direct io写操作失败(之前的page cache写入失败或invalid失败),缓存写*/
 		status = generic_perform_write(file, from, pos = iocb->ki_pos);
 		/*
 		 * If generic_perform_write() returned a synchronous error
@@ -3169,9 +3215,12 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		 * disk and invalidated to preserve the expected O_DIRECT
 		 * semantics.
 		 */
+        /*b3.即然是缓存写入则需保证数据同步刷入磁盘.*/
 		endbyte = pos + status - 1;
 		err = filemap_write_and_wait_range(mapping, pos, endbyte);
 		if (err == 0) {
+            /*更新写入pos,invalidate [pos >> PAGE_SHIFT,endbyte >> PAGE_SHIFT] pages 
+              保证direct io时下一次page cache与磁盘数据一致???*/
 			iocb->ki_pos = endbyte + 1;
 			written += status;
 			invalidate_mapping_pages(mapping,
