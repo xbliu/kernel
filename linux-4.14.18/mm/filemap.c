@@ -710,13 +710,13 @@ int replace_page_cache_page(struct page *old, struct page *new, gfp_t gfp_mask)
 		pgoff_t offset = old->index;
 		freepage = mapping->a_ops->freepage;
 
-        /*a1.保存page的关键信息*/
+		/*a1.将old page关键信息(address space与index)保存到new page*/
 		get_page(new);
 		new->mapping = mapping;
 		new->index = offset;
 
+		/*a2.从page cache中移除old page,并将new page加入到page cache*/
 		spin_lock_irqsave(&mapping->tree_lock, flags);
-        /*a2.old page从page tree中删除,new page加入其中*/
 		__delete_from_page_cache(old, NULL);
 		error = page_cache_tree_insert(mapping, new, NULL);
 		BUG_ON(error);
@@ -766,8 +766,8 @@ static int __add_to_page_cache_locked(struct page *page,
 		return error;
 	}
 
-    /*a1.page关键信息保存*/
-	get_page(page);
+	get_page(page); //增加page引用
+	/*关联address space*/
 	page->mapping = mapping;
 	page->index = offset;
 
@@ -823,7 +823,7 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 	__SetPageLocked(page);
     /*a1.加入address space的page tree中<radix tree>*/
 	ret = __add_to_page_cache_locked(page, mapping, offset,
-					 gfp_mask, &shadow);
+					 gfp_mask, &shadow); 
 	if (unlikely(ret))
 		__ClearPageLocked(page);
 	else {
@@ -839,7 +839,7 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
           page根椐是否可回收分为可回收与不可回收.
           可回收的page lru可分为两类active与inactive,根椐用途(是否有back store)其下又分anon与file*/
 		if (!(gfp_mask & __GFP_WRITE) &&
-		    shadow && workingset_refault(shadow)) {
+		    shadow && workingset_refault(shadow)) { //shadow表示什么情况???
 			SetPageActive(page);
 			workingset_activation(page);
 		} else
@@ -852,6 +852,7 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 EXPORT_SYMBOL_GPL(add_to_page_cache_lru);
 
 /*smp架构分为NUMA,UMA,COMA. 所以分配的内存的时候优先分配访问速度快的内存(local node).*/
+/*NUMA 从节点中分配,非NUMA 直接分配page*/
 #ifdef CONFIG_NUMA
 struct page *__page_cache_alloc(gfp_t gfp)
 {
