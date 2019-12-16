@@ -787,6 +787,10 @@ static int fsync_buffers_list(spinlock_t *lock, struct list_head *list)
 		/* Avoid race with mark_buffer_dirty_inode() which does
 		 * a lockless check and we rely on seeing the dirty bit */
 		smp_mb();
+        /*
+        write_dirty_buffer会清掉Dirty位,所以这是提交bio后buffer被写入了新的内容
+        即被重新dirty
+        */
 		if (buffer_dirty(bh)) {
 			list_add(&bh->b_assoc_buffers,
 				 &mapping->private_list);
