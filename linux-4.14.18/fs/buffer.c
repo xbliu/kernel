@@ -570,6 +570,7 @@ void emergency_thaw_all(void)
  * @mapping is a file or directory which needs those buffers to be written for
  * a successful fsync().
  */
+/*mapping's "associated" buffers:间接块buffer ???*/
 int sync_mapping_buffers(struct address_space *mapping)
 {
 	struct address_space *buffer_mapping = mapping->private_data;
@@ -735,9 +736,10 @@ static int fsync_buffers_list(spinlock_t *lock, struct list_head *list)
 	struct blk_plug plug;
 
 	INIT_LIST_HEAD(&tmp);
-	blk_start_plug(&plug);
+	blk_start_plug(&plug); //蓄流
 
 	spin_lock(lock);
+    /*a1.从list中移动Dirty/Lock的buffer到临时的tmp列表,排队写入到磁盘*/
 	while (!list_empty(list)) {
 		bh = BH_ENTRY(list->next);
 		mapping = bh->b_assoc_map;
@@ -773,9 +775,10 @@ static int fsync_buffers_list(spinlock_t *lock, struct list_head *list)
 	}
 
 	spin_unlock(lock);
-	blk_finish_plug(&plug);
+	blk_finish_plug(&plug); //泄流
 	spin_lock(lock);
 
+    /*a2.等待tmp列表中的脏buffer回写完成*/
 	while (!list_empty(&tmp)) {
 		bh = BH_ENTRY(tmp.prev);
 		get_bh(bh);
@@ -798,6 +801,7 @@ static int fsync_buffers_list(spinlock_t *lock, struct list_head *list)
 	}
 	
 	spin_unlock(lock);
+    /*?????*/
 	err2 = osync_buffers_list(lock, list);
 	if (err)
 		return err;
@@ -972,7 +976,7 @@ init_page_buffers(struct page *page, struct block_device *bdev,
 			if (uptodate)
 				set_buffer_uptodate(bh);
 			if (block < end_block)
-				set_buffer_mapped(bh);
+				set_buffer_mapped(bh); //buffer指定设备与block num(与其关联)即为映射
 		}
 		block++;
 		bh = bh->b_this_page;
@@ -1110,7 +1114,7 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 	for (;;) {
 		struct buffer_head *bh;
 		int ret;
-		/*a1.从page 中查找buffer_head*/
+		/*a1.从page 中查找buffer_head(可用创建后再查找)*/
 		bh = __find_get_block(bdev, block, size);
 		if (bh)
 			return bh;
@@ -1930,6 +1934,10 @@ EXPORT_SYMBOL(__block_write_full_page);
  * and dirty so they'll be written out (in order to prevent uninitialised
  * block data from leaking). And clear the new bit.
  */
+/*目前来看用于写过程:部分写成功与写之前读数据出错 
+     部分写:其它部分清0,强制用户重写 (反正数据迟早要被覆盖)
+     写之前读出错:写的部分迟早要被覆盖,读出错就清0
+*/
 void page_zero_new_buffers(struct page *page, unsigned from, unsigned to)
 {
 	unsigned int block_start, block_end;
@@ -1946,7 +1954,7 @@ void page_zero_new_buffers(struct page *page, unsigned from, unsigned to)
 
 		if (buffer_new(bh)) {
 			if (block_end > from && block_start < to) {
-				if (!PageUptodate(page)) {
+				if (!PageUptodate(page)) { //刚创建的buffer,有数据殘留(未初始化),全清0
 					unsigned start, size;
 
 					start = max(from, block_start);
@@ -2992,15 +3000,18 @@ int block_truncate_page(struct address_space *mapping,
 	length = blocksize - length;
 	iblock = (sector_t)index << (PAGE_SHIFT - inode->i_blkbits);
 	
+    /*a1.获取page*/
 	page = grab_cache_page(mapping, index);
 	err = -ENOMEM;
 	if (!page)
 		goto out;
 
+    /*a2.page无buffer,新建buffers关联*/
 	if (!page_has_buffers(page))
 		create_empty_buffers(page, blocksize, 0);
 
 	/* Find the buffer that contains "offset" */
+    /*a3.查找要操作的是哪一块*/
 	bh = page_buffers(page);
 	pos = blocksize;
 	while (offset >= pos) {
@@ -3009,6 +3020,7 @@ int block_truncate_page(struct address_space *mapping,
 		pos += blocksize;
 	}
 
+    /*a4.映射buffer到块设备*/
 	err = 0;
 	if (!buffer_mapped(bh)) {
 		WARN_ON(bh->b_size != blocksize);
@@ -3021,9 +3033,16 @@ int block_truncate_page(struct address_space *mapping,
 	}
 
 	/* Ok, it's mapped. Make sure it's up-to-date */
+    /*a4.更新up-to-date位: 
+      page包含多个buffer,扩展有两种情况:
+      1.文件长度以内扩展即原有存在的buffer上扩展
+      2.在文件尾部扩展,EOF block_nr并不是page中buffer最后的一块.
+      以上情况需要同步up-to-date位
+      */
 	if (PageUptodate(page))
 		set_buffer_uptodate(bh);
 
+    /*a5.同步磁盘数据到buffer*/
 	if (!buffer_uptodate(bh) && !buffer_delay(bh) && !buffer_unwritten(bh)) {
 		err = -EIO;
 		ll_rw_block(REQ_OP_READ, 0, 1, &bh);
@@ -3033,6 +3052,7 @@ int block_truncate_page(struct address_space *mapping,
 			goto unlock;
 	}
 
+    /*a6.扩展的数据清0*/
 	zero_user(page, offset, length);
 	mark_buffer_dirty(bh);
 	err = 0;
@@ -3056,13 +3076,16 @@ int block_write_full_page(struct page *page, get_block_t *get_block,
 	const pgoff_t end_index = i_size >> PAGE_SHIFT;
 	unsigned offset;
 
+    /*a1.不是文件结尾页,直接写*/
 	/* Is the page fully inside i_size? */
 	if (page->index < end_index)
 		return __block_write_full_page(inode, page, get_block, wbc,
 					       end_buffer_async_write);
 
+    /*a2.文件结尾页写*/
 	/* Is the page fully outside i_size? (truncate in progress) */
 	offset = i_size & (PAGE_SIZE-1);
+    //超出文件最后一页,不写
 	if (page->index >= end_index+1 || !offset) {
 		/*
 		 * The page may have dirty, unmapped buffers.  For example,
@@ -3079,8 +3102,12 @@ int block_write_full_page(struct page *page, get_block_t *get_block,
 	 * writepage invocation because it may be mmapped.  "A file is mapped
 	 * in multiples of the page size.  For a file that is not a multiple of
 	 * the  page size, the remaining memory is zeroed when mapped, and
-	 * writes to that region are not written out to the file."
+     * writes to that region are not written out to the file." 
+     * 页面跨越i_size。 它必须在每个写入页调用时归零，因为它可能被覆盖. 
+     * "文件以页面大小的倍数映射。 对于不是页面大小的倍数的文件, 
+     * 在映射时将剩余内存归零,并且不会写入该文件。 
 	 */
+    /*a3.超出的部分清0*/
 	zero_user_segment(page, offset, PAGE_SIZE);
 	return __block_write_full_page(inode, page, get_block, wbc,
 							end_buffer_async_write);
@@ -3181,6 +3208,7 @@ static int submit_bh_wbc(int op, int op_flags, struct buffer_head *bh,
 	/*
 	 * Only clear out a write error when rewriting
 	 */
+    /*a1.清除上一次写出错*/
 	if (test_set_buffer_req(bh) && (op == REQ_OP_WRITE))
 		clear_buffer_write_io_error(bh);
 
@@ -3188,6 +3216,7 @@ static int submit_bh_wbc(int op, int op_flags, struct buffer_head *bh,
 	 * from here on down, it's all bio -- do the initial mapping,
 	 * submit_bio -> generic_make_request may further map this bio around
 	 */
+    /*a2.分配bio并设置bio的块设备、扇区号等*/
 	bio = bio_alloc(GFP_NOIO, 1);
 
 	if (wbc) {
@@ -3214,6 +3243,7 @@ static int submit_bh_wbc(int op, int op_flags, struct buffer_head *bh,
 		op_flags |= REQ_PRIO;
 	bio_set_op_attrs(bio, op, op_flags);
 
+    /*a3.提交bio*/
 	submit_bio(bio);
 	return 0;
 }
@@ -3259,7 +3289,7 @@ void ll_rw_block(int op, int op_flags,  int nr, struct buffer_head *bhs[])
 
 		if (!trylock_buffer(bh))
 			continue;
-		if (op == WRITE) {
+		if (op == WRITE) { //写请求
 			if (test_clear_buffer_dirty(bh)) {
 				bh->b_end_io = end_buffer_write_sync;
 				get_bh(bh);
@@ -3267,7 +3297,7 @@ void ll_rw_block(int op, int op_flags,  int nr, struct buffer_head *bhs[])
 				continue;
 			}
 		} else {
-			if (!buffer_uptodate(bh)) {
+			if (!buffer_uptodate(bh)) { //数据未最新，跟磁盘同步到最新
 				bh->b_end_io = end_buffer_read_sync;
 				get_bh(bh);
 				submit_bh(op, op_flags, bh);
@@ -3303,6 +3333,7 @@ int __sync_dirty_buffer(struct buffer_head *bh, int op_flags)
 
 	WARN_ON(atomic_read(&bh->b_count) < 1);
 	lock_buffer(bh);
+    //buffer 脏的话就同步数据到磁盘
 	if (test_clear_buffer_dirty(bh)) {
 		get_bh(bh);
 		bh->b_end_io = end_buffer_write_sync;
@@ -3553,14 +3584,17 @@ int bh_submit_read(struct buffer_head *bh)
 {
 	BUG_ON(!buffer_locked(bh));
 
+    /*a1.数据已同步到最新,无需再同步*/
 	if (buffer_uptodate(bh)) {
 		unlock_buffer(bh);
 		return 0;
 	}
 
+    /*a2.发起同步数据请求*/
 	get_bh(bh);
 	bh->b_end_io = end_buffer_read_sync;
 	submit_bh(REQ_OP_READ, 0, bh);
+    /*a3.等待数据更新完成*/
 	wait_on_buffer(bh);
 	if (buffer_uptodate(bh))
 		return 0;

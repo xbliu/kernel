@@ -797,7 +797,7 @@ int ext2_get_block(struct inode *inode, sector_t iblock,
 	u32 bno;
 	int ret;
 	/*正常情况：
-	bno: ibock对应物理快好  
+	bno: ibock对应物理块号  
 	ret: 物理块连续的数目
 	boundary:是否到达边界
 	*/

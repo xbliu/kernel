@@ -802,9 +802,9 @@ repeat:
 	might_sleep();
 
 	rcu_read_lock();
-	/*
-	引用计数>0,则返回true
-	引用计数=0,返回false且设引用计数为1
+	/* 
+    引用计数>1,递减, true 
+    引用计数=1,false 
 	*/
 	if (likely(fast_dput(dentry))) {
 		rcu_read_unlock();

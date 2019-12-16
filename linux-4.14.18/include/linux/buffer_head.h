@@ -60,6 +60,8 @@ typedef void (bh_end_io_t)(struct buffer_head *bh, int uptodate);
  * a page (via a page_mapping) and for wrapping bio submission
  * for backward compatibility reasons (e.g. submit_bh).
  */
+/*历史上buffer_head用于映射页面中的单个块,如今是bio, 
+  buffer_head用于提取块映射、跟踪页面内的状态以及向后兼容(如submit_bh)*/
 struct buffer_head {
 	unsigned long b_state;		/* buffer state bitmap (see above) 缓冲区的状态标志*/
 	struct buffer_head *b_this_page;/* circular list of page's buffers 当前页中缓冲区列表*/
