@@ -404,6 +404,12 @@ confused:
  *
  * This all causes the disk requests to be issued in the correct order.
  */
+/*
+mpage读取前16块,将导致以下提交顺序:12 0-11 13-16.
+因为间接寻址需要先读取映射块12才能找到后续四块(13-16).明显影响性能.
+所以设置BH_Boundary,告知可先提交积累的0-11,接着12,最后13-16,
+以正确的顺序发出磁盘请求,提升性能.
+*/
 int
 mpage_readpages(struct address_space *mapping, struct list_head *pages,
 				unsigned nr_pages, get_block_t get_block)
@@ -610,7 +616,11 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 					goto confused;
 			}
 			blocks[page_block++] = bh->b_blocknr; //序号存入blocks数组
-			boundary = buffer_boundary(bh);//ext2 直接寻block<最后一个为boundary值> 一级指针寻block 二级指针寻block
+            /* 
+            ext2 直接寻block<最后一个为boundary值> 
+            一级指针寻block 二级指针寻block<间接寻址映射块页内最后一个为boundary值>
+            */
+			boundary = buffer_boundary(bh);
 			if (boundary) {
 				boundary_block = bh->b_blocknr;
 				boundary_bdev = bh->b_bdev;

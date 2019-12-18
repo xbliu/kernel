@@ -18,30 +18,48 @@
 #ifdef CONFIG_BLOCK
 
 enum bh_state_bits {
-    /*buffer中的数据与磁盘数据一样(包含有效数据):从磁盘读数据到buffer或将dirty数据写入磁盘*/
+    /*缓冲区数据是可用的:从磁盘读数据到buffer或将dirty数据写入磁盘*/
 	BH_Uptodate,	/* Contains valid data */
-    /*buffer中的数据被修改:如写文件*/
+    /*缓冲区数据新于磁盘数据:如写文件*/
 	BH_Dirty,	/* Is dirty */
-    /*表明buffer已被锁定:保护buffer中的数据不被同时修改*/
+    /*buffer的数据正在进行操作(磁盘IO,memset),被锁定,防止并发操作*/
 	BH_Lock,	/* Is locked */
     /*已提交IO.什么时候清除？多数标记BH_New时清除(因为刚创建的块不可能已提交IO),但这又有什么用呢？*/
 	BH_Req,		/* Has been submitted for I/O */
+    /*目前在Async_Read/Async_Write中使用,序列化的检测page中的buffer完成状态*/
 	BH_Uptodate_Lock,/* Used by the first bh in a page, to serialise
 			  * IO completion of other buffers in the page
 			  */
-    /*buffer指定了块设备与块号即bdev与b_blocknr赋值*/
+    /*缓冲区已绑定块设备的具体块即bdev与b_blocknr赋值*/
 	BH_Mapped,	/* Has a disk mapping */
     /*buffer关联的block是由文件系统新分配的:例如在文件尾部追加数据且数据超过原EOF的block.*/
 	BH_New,		/* Disk mapping was newly created by get_block */
-    /*Async_Read/Async_Write 标记异步读写 ???*/
+    /*Async_Read/Async_Write 以页为单位发起读/写,page中的buffers读/写是异步的,
+    此标志可以告知end_buffer_async_xxx page中的所有buffer是否已经读/写完成,从而unlock page. 
+    若没有此标志,单纯的BH_lock标志不能区分此情况:因为读/写完成的的buffer可能再次被其次进程lock
+    */ 
 	BH_Async_Read,	/* Is under end_buffer_async_read I/O */
 	BH_Async_Write,	/* Is under end_buffer_async_write I/O */
+    /*缓冲区指定了块设备,但未指定块号.有以两种情况: 
+      1.文件系统已有分配块号对应,但未与之关联.
+      2.文件系统未分配块号对应.
+      Delay指的是第二种情况,对于文件空洞与追加内容超过EOF块,此时新增的内容可跨越多个块,
+      可先保存文件数据延后分配磁盘物理块,保证文件在磁盘中的连续性,可提高文件的读写性能.
+      (延迟分配:在进程写数据时不立即分配块,当文件保持在cache中时他会延迟分配块,
+      直到数据真的写入磁盘时才分配,这样就给了时间让块分配器优化当前的情况)
+    */
 	BH_Delay,	/* Buffer is not yet allocated on disk */
-    /*表明buffer是直接寻block与间接寻block界线,即最后一个直接寻block的数组, 
-      那么直接寻block的块号一定连续吗???*/
+    /*
+    物理block寻址分为直接寻址与间接寻址(相当于指针), 
+    间接寻址需要先读取映射块(逻辑block与物理block映射描述)才能进行物理block寻址. 
+    Boundary表示此块可能接近需要进行IO请求的映射块,需提交之前积累的IO操作.如:
+    例子参见mpage_readpages解释.
+    */
 	BH_Boundary,	/* Block is followed by a discontiguity */
 	BH_Write_EIO,	/* I/O error on write */
-    /*buffer已分配但没有写: dax ext4???*/
+    /*
+    预先分配物理块给文件,但并未写入数据,以保证文件数据在磁盘中的连续性, 
+    防碎片化:ext4 or 其它文件的特性 (p2p下载是否此场景之一呢???)*/
 	BH_Unwritten,	/* Buffer is allocated on disk but not written */
 	BH_Quiet,	/* Buffer Error Prinks to be quiet */
     /*包含元数据,在哪设置的呢???*/

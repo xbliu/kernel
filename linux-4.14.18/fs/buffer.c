@@ -1655,6 +1655,15 @@ EXPORT_SYMBOL(create_empty_buffers);
  * I/O in bforget() - it's more efficient to wait on the I/O only if we really
  * need to.  That happens here.
  */
+/*
+文件的间接数据块在文件读写过程可能被加载到内存,即被bd_inode(设备节点) mapping tree管理,当文件删除时,
+此间接数据块可被文件系统分配给新的文件且应当从bd_inode移除.但是在从bd_inode mapping tree移除之前,
+此间接数据块有可能已被分配给新的文件,此时在bd_inode mapping tree的殘留buffer_head有可能是dirty,
+若不清除dirty位,很可能回写导致数据混乱.
+Q:为什么不能在分配之前将其从bd_inode mapping tree中移除释放呢?
+A:ext2是可以的,但在ext3日志文件系统中提交当前删除事务(间接块的数据块位图写入到日志空间)后,
+dirty buffer_head还未回写<当前还是没有明白,需要看一下ext3事务提交过程!!!!>.
+*/
 void clean_bdev_aliases(struct block_device *bdev, sector_t block, sector_t len)
 {
 	struct inode *bd_inode = bdev->bd_inode;
