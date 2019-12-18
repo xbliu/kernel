@@ -18,23 +18,33 @@
 #ifdef CONFIG_BLOCK
 
 enum bh_state_bits {
+    /*buffer中的数据与磁盘数据一样(包含有效数据):从磁盘读数据到buffer或将dirty数据写入磁盘*/
 	BH_Uptodate,	/* Contains valid data */
+    /*buffer中的数据被修改:如写文件*/
 	BH_Dirty,	/* Is dirty */
+    /*表明buffer已被锁定:保护buffer中的数据不被同时修改*/
 	BH_Lock,	/* Is locked */
+    /*已提交IO.什么时候清除？多数标记BH_New时清除(因为刚创建的块不可能已提交IO),但这又有什么用呢？*/
 	BH_Req,		/* Has been submitted for I/O */
 	BH_Uptodate_Lock,/* Used by the first bh in a page, to serialise
 			  * IO completion of other buffers in the page
 			  */
-
+    /*buffer指定了块设备与块号即bdev与b_blocknr赋值*/
 	BH_Mapped,	/* Has a disk mapping */
+    /*buffer关联的block是由文件系统新分配的:例如在文件尾部追加数据且数据超过原EOF的block.*/
 	BH_New,		/* Disk mapping was newly created by get_block */
+    /*Async_Read/Async_Write 标记异步读写 ???*/
 	BH_Async_Read,	/* Is under end_buffer_async_read I/O */
 	BH_Async_Write,	/* Is under end_buffer_async_write I/O */
 	BH_Delay,	/* Buffer is not yet allocated on disk */
+    /*表明buffer是直接寻block与间接寻block界线,即最后一个直接寻block的数组, 
+      那么直接寻block的块号一定连续吗???*/
 	BH_Boundary,	/* Block is followed by a discontiguity */
 	BH_Write_EIO,	/* I/O error on write */
+    /*buffer已分配但没有写: dax ext4???*/
 	BH_Unwritten,	/* Buffer is allocated on disk but not written */
 	BH_Quiet,	/* Buffer Error Prinks to be quiet */
+    /*包含元数据,在哪设置的呢???*/
 	BH_Meta,	/* Buffer contains metadata */
 	BH_Prio,	/* Buffer should be submitted with REQ_PRIO */
 	BH_Defer_Completion, /* Defer AIO completion to workqueue */
