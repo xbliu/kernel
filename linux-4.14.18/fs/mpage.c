@@ -149,6 +149,10 @@ map_buffer_to_page(struct page *page, struct buffer_head *bh, int page_block)
  * represent the validity of its disk mapping and to decide when to do the next
  * get_block() call.
  */
+/*
+1)页中块连续调用mpage_bio_submit函数请求整个page的数据 
+2)页中块不连续调用block_read_full_page逐个block读取
+*/
 static struct bio *
 do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 		sector_t *last_block_in_bio, struct buffer_head *map_bh,
@@ -223,6 +227,13 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 	/*
 	 * Then do more get_blocks calls until we are done with this page.
 	 */
+    /*
+    1)page_block从0开始循环,表示在这个page内的第几个block
+    2)调用get_block函数查找对应逻辑块的物理块号 
+    3)如果遇到了文件空洞、page上的物理块不连续就会跳转到confused, 
+           调用block_read_full_page函数采用buffer缓冲区的形式来逐个块获取数据 
+    4)将此page中每个逻辑块对应的物理块都保存到临时的数组blocks中
+    */ 
 	map_bh->b_page = page;
 	while (page_block < blocks_per_page) {
 		map_bh->b_state = 0;
@@ -291,7 +302,7 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 	
 	/*
 	***a.页内块有空洞将空洞内容清0
-	***b.页内无空洞，表明最新内容在disk.
+	***b.页内无空洞且页面中的物理块是连续的,表明页中的所有块已在磁盘中分配.
 	*/
 	if (first_hole != blocks_per_page) {
 		zero_user_segment(page, first_hole << blkbits, PAGE_SIZE);
@@ -319,6 +330,7 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 alloc_new:
 	if (bio == NULL) {
 		if (first_hole == blocks_per_page) {
+            /*若驱动实现了同步rw_page函数,则调用它读取页,一般是没有实现此函数的*/
 			if (!bdev_read_page(bdev, blocks[0] << (blkbits - 9),
 								page))
 				goto out;
@@ -425,6 +437,9 @@ mpage_readpages(struct address_space *mapping, struct list_head *pages,
 	map_bh.b_size = 0;
     /*一页一页的处理*/
 	for (page_idx = 0; page_idx < nr_pages; page_idx++) {
+        /* 
+        因为处理完后移除了(list_del(&page->lru)),所以(head)->prev指向的是下一个. 
+        */
 		struct page *page = lru_to_page(pages);
 
 		prefetchw(&page->flags);
