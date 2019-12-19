@@ -2099,14 +2099,18 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 
 			if (buffer_new(bh)) {
 				clean_bdev_bh_alias(bh);
-				if (PageUptodate(page)) {//新建物理块号,page有新内容需写入,此时buffer应uptodate&&dirty
+				/*
+				新建物理块号,page有新内容需写入,此时buffer应uptodate&&dirty
+				情景:page有hole块,先读再写hole块
+				*/
+				if (PageUptodate(page)) {
 					clear_buffer_new(bh);
 					set_buffer_uptodate(bh);
 					mark_buffer_dirty(bh);
 					continue;
 				}
 				
-				/*要写的部分清0,[block_start,block_end]与[from,to]有交叉*/
+				/*未写的部分清0,[block_start,block_end]与[from,to]有交叉*/
 				if (block_end > to || block_start < from)
 					zero_user_segments(page,
 						to, block_end,
