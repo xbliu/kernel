@@ -3399,6 +3399,7 @@ drop_buffers(struct page *page, struct buffer_head **buffers_to_free)
 	struct buffer_head *head = page_buffers(page);
 	struct buffer_head *bh;
 
+	/*a1.检测buffer 是否可以释放*/
 	bh = head;
 	do {
 		if (buffer_busy(bh))
@@ -3406,6 +3407,7 @@ drop_buffers(struct page *page, struct buffer_head **buffers_to_free)
 		bh = bh->b_this_page;
 	} while (bh != head);
 
+	/*a2.移除关联的address_space*/
 	do {
 		struct buffer_head *next = bh->b_this_page;
 
@@ -3414,6 +3416,7 @@ drop_buffers(struct page *page, struct buffer_head **buffers_to_free)
 		bh = next;
 	} while (bh != head);
 	*buffers_to_free = head;
+	/*a3.清除page中buffer的标志(从page移除关联buffer)*/
 	__clear_page_buffers(page);
 	return 1;
 failed:
@@ -3436,6 +3439,7 @@ int try_to_free_buffers(struct page *page)
 	}
 
 	spin_lock(&mapping->private_lock);
+	/*a1.移除关联(address_space、page)*/
 	ret = drop_buffers(page, &buffers_to_free);
 
 	/*
@@ -3456,6 +3460,7 @@ int try_to_free_buffers(struct page *page)
 		cancel_dirty_page(page);
 	spin_unlock(&mapping->private_lock);
 out:
+	/*a2.释放buffer_head*/
 	if (buffers_to_free) {
 		struct buffer_head *bh = buffers_to_free;
 
