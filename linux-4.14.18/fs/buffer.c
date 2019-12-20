@@ -1967,7 +1967,11 @@ void page_zero_new_buffers(struct page *page, unsigned from, unsigned to)
 
 		if (buffer_new(bh)) {
 			if (block_end > from && block_start < to) {
-				if (!PageUptodate(page)) { //刚创建的buffer,有数据殘留(未初始化),全清0
+                /*
+                新分配的块,page内不全是有效的数据, 
+                清除[block_start,block_end]与[from,to]交叉的部分.
+                */
+				if (!PageUptodate(page)) {
 					unsigned start, size;
 
 					start = max(from, block_start);
@@ -2067,7 +2071,7 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
     /*a2.page index转换成逻辑块索引*/
 	block = (sector_t)page->index << (PAGE_SHIFT - bbits);
 
-    /*a3.*/
+    /*a3.mapped buffer head,从磁盘同步必要的块内数据(块未写部分)*/
 	for(bh = head, block_start = 0; bh != head || !block_start;
 	    block++, block_start=block_end, bh = bh->b_this_page) {
 		block_end = block_start + blocksize;
@@ -2077,13 +2081,20 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 		若请示写在第2block,则0,1,3不符合要求.
 		*/
 		if (block_end <= from || block_start >= to) {
-			if (PageUptodate(page)) { //这一种什么情况下发生???
+            /* 
+              情景:整页都是空洞块,首次读时page置PG_uptodate.其后写其中一块.
+            */
+			if (PageUptodate(page)) {
 				if (!buffer_uptodate(bh)) 
 					set_buffer_uptodate(bh);
 			}
 			continue;
 		}
-		/*b2.清除BH_New标志,此标记IO已经映射buffer_head (iomap_to_bh)*/
+        /* 
+          b2.清除BH_New标志,此标记IO已经映射buffer_head (iomap_to_bh)
+         __block_commit_write不是会清除buffer_new吗,为什么在这还要清除呢?
+         猜测情景:unwritten与delay类型的块???
+        */
 		if (buffer_new(bh))
 			clear_buffer_new(bh);
 		/*b3.buffer_head 需要关联映射到 io block*/
@@ -2259,7 +2270,7 @@ int block_write_end(struct file *file, struct address_space *mapping,
 	flush_dcache_page(page);
 
 	/* This could be a short (even 0-length) commit */
-    /*a2.更新page(Uptodate) buffer_head(uptodate,dirty)的状态 */
+    /*a2.更新page(Uptodate) buffer_head(uptodate,dirty,!new)的状态 */
 	__block_commit_write(inode, page, start, start+copied);
 
 	return copied;
