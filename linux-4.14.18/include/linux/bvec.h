@@ -28,9 +28,9 @@
  * was unsigned short, but we might as well be ready for > 64kB I/O pages
  */
 struct bio_vec {
-	struct page	*bv_page;
-	unsigned int	bv_len;
-	unsigned int	bv_offset;
+	struct page	*bv_page; //数据所在页
+	unsigned int	bv_len; //数据长度
+	unsigned int	bv_offset; //页内偏移
 };
 
 struct bvec_iter {

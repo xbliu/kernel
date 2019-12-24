@@ -63,6 +63,7 @@ struct bio {
 	/* Number of segments in this BIO after
 	 * physical address coalescing is performed.
 	 */
+    /*当完成物理地址合并之后剩余段的数量*/
 	unsigned int		bi_phys_segments;
 
 	/*
@@ -73,7 +74,7 @@ struct bio {
 	unsigned int		bi_seg_back_size;
 
 	struct bvec_iter	bi_iter;
-
+    /*关联bio的数量*/
 	atomic_t		__bi_remaining;
 	bio_end_io_t		*bi_end_io;
 
@@ -103,7 +104,7 @@ struct bio {
 	 */
 
 	unsigned short		bi_max_vecs;	/* max bvl_vecs we can hold */
-
+    /*当前的bio引用计数 为0时free*/
 	atomic_t		__bi_cnt;	/* pin count */
 
 	struct bio_vec		*bi_io_vec;	/* the actual vec list */
@@ -115,6 +116,7 @@ struct bio {
 	 * double allocations for a small number of bio_vecs. This member
 	 * MUST obviously be kept at the very end of the bio.
 	 */
+    /*表示跟在bio后面的数据集合:避免少量的bio_vecs的双重分配*/
 	struct bio_vec		bi_inline_vecs[0];
 };
 
