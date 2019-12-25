@@ -37,7 +37,7 @@ struct bvec_iter {
 	sector_t		bi_sector;	/* device address in 512 byte
 						   sectors */
 	unsigned int		bi_size;	/* residual I/O count */
-
+	/*当前未完成请求bio的在bvl_vec开始索引*/
 	unsigned int		bi_idx;		/* current index into bvl_vec */
 
 	unsigned int            bi_done;	/* number of bytes completed */

@@ -137,7 +137,7 @@ static void bio_put_slab(struct bio_set *bs)
 	unsigned int i;
 
 	mutex_lock(&bio_slab_lock);
-
+	/*a1.从bio_slabs查找对应的bio_slab*/
 	for (i = 0; i < bio_slab_nr; i++) {
 		if (bs->bio_slab == bio_slabs[i].slab) {
 			bslab = &bio_slabs[i];
@@ -149,10 +149,11 @@ static void bio_put_slab(struct bio_set *bs)
 		goto out;
 
 	WARN_ON(!bslab->slab_ref);
-
+	/*a2.bio_slab引用减1*/
 	if (--bslab->slab_ref)
 		goto out;
 
+	/*a2.bio_slab 引用为0,释放*/
 	kmem_cache_destroy(bslab->slab);
 	bslab->slab = NULL;
 
@@ -172,7 +173,10 @@ void bvec_free(mempool_t *pool, struct bio_vec *bv, unsigned int idx)
 	idx--;
 
 	BIO_BUG_ON(idx >= BVEC_POOL_NR);
-
+	/*
+	idx=BVEC_POOL_MAX:内存池释放
+	idx [0,BVEC_POOL_MAX-1] 直接释放
+	*/
 	if (idx == BVEC_POOL_MAX) {
 		mempool_free(bv, pool);
 	} else {
@@ -217,7 +221,10 @@ struct bio_vec *bvec_alloc(gfp_t gfp_mask, int nr, unsigned long *idx,
 	 * idx now points to the pool we want to allocate from. only the
 	 * 1-vec entry pool is mempool backed.
 	 */
-    /*优先从bvec_slabs数组中的slab cache中分配,否则从池中分配*/
+    /*
+	1) id=BVEC_POOL_MAX :优先从slab cache中分配,否则从池中分配
+	2) id [1,BVEC_POOL_MAX] : 从bvec_slabs中的slab cache分配,若分配失败再次分配同1
+    */
 	if (*idx == BVEC_POOL_MAX) {
 fallback:
 		bvl = mempool_alloc(pool, gfp_mask);
@@ -243,7 +250,7 @@ fallback:
 		}
 	}
 
-	(*idx)++;
+	(*idx)++; //idx为何要自增???
 	return bvl;
 }
 
@@ -258,14 +265,18 @@ static void bio_free(struct bio *bio)
 	struct bio_set *bs = bio->bi_pool;
 	void *p;
 
+	/*断开与io_context的联系*/
 	bio_uninit(bio);
 
+	/*bio有bio_set,则由bio_set释放,否则直接释放(由伙伴系统直接分配的)*/
 	if (bs) {
+		/*b1.释放bio_vec*/
 		bvec_free(bs->bvec_pool, bio->bi_io_vec, BVEC_POOL_IDX(bio));
 
 		/*
 		 * If we have front padding, adjust the bio pointer before freeing
 		 */
+		/*b2.调整bio指针(front_pad不为其它结构嵌套了bio),释放bio*/
 		p = bio;
 		p -= bs->front_pad;
 
@@ -355,7 +366,7 @@ static void bio_alloc_rescue(struct work_struct *work)
 {
 	struct bio_set *bs = container_of(work, struct bio_set, rescue_work);
 	struct bio *bio;
-
+	/*从bs->rescue_list 取出所有的bio,重新提交bio给设备驱动*/
 	while (1) {
 		spin_lock(&bs->rescue_lock);
 		bio = bio_list_pop(&bs->rescue_list);
@@ -389,15 +400,18 @@ static void punt_bios_to_rescuer(struct bio_set *bs)
 	bio_list_init(&punt);
 	bio_list_init(&nopunt);
 
+	/*a1.从current->bio_list[0]取出属于bs的bio添加punt列表*/
 	while ((bio = bio_list_pop(&current->bio_list[0])))
 		bio_list_add(bio->bi_pool == bs ? &punt : &nopunt, bio);
 	current->bio_list[0] = nopunt;
 
+	/*a2.从current->bio_list[1]取出属于bs的bio添加punt列表*/
 	bio_list_init(&nopunt);
 	while ((bio = bio_list_pop(&current->bio_list[1])))
 		bio_list_add(bio->bi_pool == bs ? &punt : &nopunt, bio);
 	current->bio_list[1] = nopunt;
 
+	/*a3.将punt列表合并入rescue_list,并由rescue_workqueue调度处理*/
 	spin_lock(&bs->rescue_lock);
 	bio_list_merge(&bs->rescue_list, &punt);
 	spin_unlock(&bs->rescue_lock);
@@ -637,11 +651,13 @@ EXPORT_SYMBOL(__bio_clone_fast);
 struct bio *bio_clone_fast(struct bio *bio, gfp_t gfp_mask, struct bio_set *bs)
 {
 	struct bio *b;
-
+	
+	/*a1.从 bio_set中分配一个bio*/
 	b = bio_alloc_bioset(gfp_mask, 0, bs);
 	if (!b)
 		return NULL;
 
+	/*a2.复制bio相关信息*/
 	__bio_clone_fast(b, bio);
 
 	if (bio_integrity(bio)) {
@@ -762,7 +778,7 @@ int bio_add_pc_page(struct request_queue *q, struct bio *bio, struct page
 	 */
 	if (unlikely(bio_flagged(bio, BIO_CLONED)))
 		return 0;
-
+	/*a1.检查bio总扇区大小是否超过request_queue限制*/
 	if (((bio->bi_iter.bi_size + len) >> 9) > queue_max_hw_sectors(q))
 		return 0;
 
@@ -771,9 +787,14 @@ int bio_add_pc_page(struct request_queue *q, struct bio *bio, struct page
 	 * we will often be called with the same page as last time and
 	 * a consecutive offset.  Optimize this special case.
 	 */
+	/*
+	a2.检查是否是同一page中的后继block或支持SG gaps
+	(意味着page加入需从小到大的加入)
+	*/
 	if (bio->bi_vcnt > 0) {
 		struct bio_vec *prev = &bio->bi_io_vec[bio->bi_vcnt - 1];
 
+		/*同一页中的后继block*/
 		if (page == prev->bv_page &&
 		    offset == prev->bv_offset + prev->bv_len) {
 			prev->bv_len += len;
@@ -789,6 +810,7 @@ int bio_add_pc_page(struct request_queue *q, struct bio *bio, struct page
 			return 0;
 	}
 
+	/*a3.检查bio_vec是否已达到最大*/
 	if (bio->bi_vcnt >= bio->bi_max_vecs)
 		return 0;
 
@@ -796,6 +818,7 @@ int bio_add_pc_page(struct request_queue *q, struct bio *bio, struct page
 	 * setup the new entry, we might clear it again later if we
 	 * cannot add the page
 	 */
+	/*a4.加入到bio vector*/
 	bvec = &bio->bi_io_vec[bio->bi_vcnt];
 	bvec->bv_page = page;
 	bvec->bv_len = len;
@@ -808,7 +831,7 @@ int bio_add_pc_page(struct request_queue *q, struct bio *bio, struct page
 	 * Perform a recount if the number of segments is greater
 	 * than queue_max_segments(q).
 	 */
-
+	/*a5.若bi_phys_segments大于request queue限制则重新统计segments*/
 	while (bio->bi_phys_segments > queue_max_segments(q)) {
 
 		if (retried_segments)
@@ -862,6 +885,7 @@ int bio_add_page(struct bio *bio, struct page *page,
 	 * we will often be called with the same page as last time and
 	 * a consecutive offset.  Optimize this special case.
 	 */
+	/*a1.检查是否是同一page中的后继block*/
 	if (bio->bi_vcnt > 0) {
 		bv = &bio->bi_io_vec[bio->bi_vcnt - 1];
 
@@ -871,10 +895,12 @@ int bio_add_page(struct bio *bio, struct page *page,
 			goto done;
 		}
 	}
-
+	
+	/*a2.检查bio_vec是否已达到最大*/
 	if (bio->bi_vcnt >= bio->bi_max_vecs)
 		return 0;
 
+	/*a3.加入到bio vector*/
 	bv		= &bio->bi_io_vec[bio->bi_vcnt];
 	bv->bv_page	= page;
 	bv->bv_len	= len;
@@ -897,15 +923,18 @@ EXPORT_SYMBOL(bio_add_page);
  */
 int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 {
-	unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt;
-	struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt;
+	/*计算剩下的bio vector数目N,每一个bio vector最多可表示一页,所以最多可以添加N页*/
+	unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt; 
+	struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt; //下一个bio_vec地址
 	struct page **pages = (struct page **)bv;
 	size_t offset, diff;
 	ssize_t size;
 
+	/*a1.获取起始offset与长度size*/
 	size = iov_iter_get_pages(iter, pages, LONG_MAX, nr_pages, &offset);
 	if (unlikely(size <= 0))
 		return size ? size : -EFAULT;
+	/*a2.计算有多少页*/
 	nr_pages = (size + offset + PAGE_SIZE - 1) / PAGE_SIZE;
 
 	/*
@@ -916,16 +945,21 @@ int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 	 * means we can't use bio_add_page, so any changes to it's semantics
 	 * need to be reflected here as well.
 	 */
+	/*a3.更新bio相关值并一页一页加入到bio vector*/
 	bio->bi_iter.bi_size += size;
 	bio->bi_vcnt += nr_pages;
 
-	diff = (nr_pages * PAGE_SIZE - offset) - size;
+	/*
+	nr_pages以PAGE_SIZE取整的,所以可能大于size+offset
+	*/
+	diff = (nr_pages * PAGE_SIZE - offset) - size; 
 	while (nr_pages--) {
 		bv[nr_pages].bv_page = pages[nr_pages];
 		bv[nr_pages].bv_len = PAGE_SIZE;
 		bv[nr_pages].bv_offset = 0;
 	}
 
+	/*a4.更新第一个bio vector的offset与len与更正最后个bio vector的长度偏差*/
 	bv[0].bv_offset += offset;
 	bv[0].bv_len -= offset;
 	if (diff)
@@ -1009,7 +1043,7 @@ int bio_alloc_pages(struct bio *bio, gfp_t gfp_mask)
 {
 	int i;
 	struct bio_vec *bv;
-
+	/*为bi_vcnt个bio vector分配page*/
 	bio_for_each_segment_all(bv, bio, i) {
 		bv->bv_page = alloc_page(gfp_mask);
 		if (!bv->bv_page) {
@@ -1067,7 +1101,7 @@ void bio_copy_data(struct bio *dst, struct bio *src)
 
 		bytes = min(src_bv.bv_len, dst_bv.bv_len);
 
-		src_p = kmap_atomic(src_bv.bv_page);
+		src_p = kmap_atomic(src_bv.bv_page); //kmap_atomic禁止抢占与缺页异常 ????
 		dst_p = kmap_atomic(dst_bv.bv_page);
 
 		memcpy(dst_p + dst_bv.bv_offset,
@@ -1165,7 +1199,7 @@ void bio_free_pages(struct bio *bio)
 {
 	struct bio_vec *bvec;
 	int i;
-
+	//释放所有使用的(bi_vcnt)bio vector的page
 	bio_for_each_segment_all(bvec, bio, i)
 		__free_page(bvec->bv_page);
 }
@@ -1225,6 +1259,7 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 	unsigned int len = iter->count;
 	unsigned int offset = map_data ? offset_in_page(map_data->offset) : 0;
 
+	/*a1.计算用户数据需要多少page存放*/
 	for (i = 0; i < iter->nr_segs; i++) {
 		unsigned long uaddr;
 		unsigned long end;
@@ -1247,6 +1282,7 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 	if (offset)
 		nr_pages++;
 
+	/*a2.分配bio_map_data,将用户空间的iov_iter复制到内核空间*/
 	bmd = bio_alloc_map_data(iter->nr_segs, gfp_mask);
 	if (!bmd)
 		return ERR_PTR(-ENOMEM);
@@ -1261,6 +1297,7 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 	bmd->iter = *iter;
 	bmd->iter.iov = bmd->iov;
 
+	/*a3.分配bio*/
 	ret = -ENOMEM;
 	bio = bio_kmalloc(gfp_mask, nr_pages);
 	if (!bio)
@@ -1268,6 +1305,7 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 
 	ret = 0;
 
+	/*a4.分配所需page*/
 	if (map_data) {
 		nr_pages = 1 << map_data->page_order;
 		i = map_data->offset / PAGE_SIZE;
@@ -1311,6 +1349,7 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 	/*
 	 * success
 	 */
+	 /*a5.从bio_map_data中复制数据到bio*/
 	if (((iter->type & WRITE) && (!map_data || !map_data->null_mapped)) ||
 	    (map_data && map_data->from_user)) {
 		ret = bio_copy_from_iter(bio, *iter);
@@ -1351,7 +1390,8 @@ struct bio *bio_map_user_iov(struct request_queue *q,
 	struct iov_iter i;
 	struct iovec iov;
 	struct bio_vec *bvec;
-
+	
+	/*a1.计算用户数据需要多少page存放*/
 	iov_for_each(iov, i, *iter) {
 		unsigned long uaddr = (unsigned long) iov.iov_base;
 		unsigned long len = iov.iov_len;
@@ -1374,7 +1414,8 @@ struct bio *bio_map_user_iov(struct request_queue *q,
 
 	if (!nr_pages)
 		return ERR_PTR(-EINVAL);
-
+	
+	/*a2.分配bio与pages<用来存放user page指针>*/
 	bio = bio_kmalloc(gfp_mask, nr_pages);
 	if (!bio)
 		return ERR_PTR(-ENOMEM);
@@ -1383,7 +1424,8 @@ struct bio *bio_map_user_iov(struct request_queue *q,
 	pages = kcalloc(nr_pages, sizeof(struct page *), gfp_mask);
 	if (!pages)
 		goto out;
-
+	
+	/*a3.获取用户页并加入到bio中*/
 	iov_for_each(iov, i, *iter) {
 		unsigned long uaddr = (unsigned long) iov.iov_base;
 		unsigned long len = iov.iov_len;
@@ -1394,7 +1436,7 @@ struct bio *bio_map_user_iov(struct request_queue *q,
 
 		ret = get_user_pages_fast(uaddr, local_nr_pages,
 				(iter->type & WRITE) != WRITE,
-				&pages[cur_page]);
+				&pages[cur_page]); //获取用户页并存放到pages[cur_page]中
 		if (unlikely(ret < local_nr_pages)) {
 			for (j = cur_page; j < page_limit; j++) {
 				if (!pages[j])
@@ -1465,6 +1507,7 @@ struct bio *bio_map_user_iov(struct request_queue *q,
 	return ERR_PTR(ret);
 }
 
+/*实际上减少引用计数*/
 static void __bio_unmap_user(struct bio *bio)
 {
 	struct bio_vec *bvec;
@@ -1475,7 +1518,7 @@ static void __bio_unmap_user(struct bio *bio)
 	 */
 	bio_for_each_segment_all(bvec, bio, i) {
 		if (bio_data_dir(bio) == READ)
-			set_page_dirty_lock(bvec->bv_page);
+			set_page_dirty_lock(bvec->bv_page); //bio是读,设page为脏
 
 		put_page(bvec->bv_page);
 	}
@@ -1523,10 +1566,12 @@ struct bio *bio_map_kern(struct request_queue *q, void *data, unsigned int len,
 	int offset, i;
 	struct bio *bio;
 
+	/*a1.分配bio*/
 	bio = bio_kmalloc(gfp_mask, nr_pages);
 	if (!bio)
 		return ERR_PTR(-ENOMEM);
 
+	/*a2.获取kernel page(虚拟地址转page)并加入到bio*/
 	offset = offset_in_page(kaddr);
 	for (i = 0; i < nr_pages; i++) {
 		unsigned int bytes = PAGE_SIZE - offset;
@@ -1601,11 +1646,13 @@ struct bio *bio_copy_kern(struct request_queue *q, void *data, unsigned int len,
 	if (end < start)
 		return ERR_PTR(-EINVAL);
 
+	/*a1.计算所需页数*/
 	nr_pages = end - start;
 	bio = bio_kmalloc(gfp_mask, nr_pages);
 	if (!bio)
 		return ERR_PTR(-ENOMEM);
 
+	/*a2.分配page,写的话copy数据到页,加入到bio*/
 	while (len) {
 		struct page *page;
 		unsigned int bytes = PAGE_SIZE;
@@ -1727,6 +1774,7 @@ static void bio_dirty_fn(struct work_struct *work)
 	bio_dirty_list = NULL;
 	spin_unlock_irqrestore(&bio_dirty_lock, flags);
 
+	//对bio_dirty_list上的每一个bio的所有bio vec的page设为脏
 	while (bio) {
 		struct bio *next = bio->bi_private;
 

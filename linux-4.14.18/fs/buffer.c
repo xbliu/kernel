@@ -2091,9 +2091,11 @@ int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 			continue;
 		}
         /* 
-          b2.清除BH_New标志,此标记IO已经映射buffer_head (iomap_to_bh)
-         __block_commit_write不是会清除buffer_new吗,为什么在这还要清除呢?
-         猜测情景:unwritten与delay类型的块???
+          b2.清除BH_New标志(相应的文件块正好被分配但从未被访问)
+         __block_commit_write不是会清除BH_New吗,为什么在这还要清除呢?
+         猜测情景:
+         1)unwritten与delay类型的块???
+         2)历史遗留 __block_commit_write(2.6)没有清除BH_New标志
         */
 		if (buffer_new(bh))
 			clear_buffer_new(bh);

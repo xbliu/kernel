@@ -97,12 +97,13 @@ struct bio {
 #endif
 	};
 
+	/*已经使用的bio vector数目*/
 	unsigned short		bi_vcnt;	/* how many bio_vec's */
 
 	/*
 	 * Everything starting with bi_max_vecs will be preserved by bio_reset()
 	 */
-
+	/*拥有bio vector的数目*/
 	unsigned short		bi_max_vecs;	/* max bvl_vecs we can hold */
     /*当前的bio引用计数 为0时free*/
 	atomic_t		__bi_cnt;	/* pin count */
