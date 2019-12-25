@@ -2136,7 +2136,7 @@ EXPORT_SYMBOL_GPL(bio_clone_blkcg_association);
 static void __init biovec_init_slabs(void)
 {
 	int i;
-
+    /*biovec小于BIO_INLINE_VECS不从slab中分配,其它的初始化相应的slab cache*/
 	for (i = 0; i < BVEC_POOL_NR; i++) {
 		int size;
 		struct biovec_slab *bvs = bvec_slabs + i;
@@ -2154,6 +2154,7 @@ static void __init biovec_init_slabs(void)
 
 static int __init init_bio(void)
 {
+    /*a1.初始化bio slab数组(bio_slabs)*/
 	bio_slab_max = 2;
 	bio_slab_nr = 0;
 	bio_slabs = kzalloc(bio_slab_max * sizeof(struct bio_slab), GFP_KERNEL);
@@ -2161,8 +2162,13 @@ static int __init init_bio(void)
 		panic("bio: can't allocate bios\n");
 
 	bio_integrity_init();
+    /*a2.初始化bvec_slabs: 
+      对bio_vec数量大小分6个量级:1,4,16,64,128,BIO_MAX_PAGES.
+      bio_vec分配时从相应的slab cache中分配.
+    */
 	biovec_init_slabs();
 
+    /*a3.初始化公用bio_set*/
 	fs_bio_set = bioset_create(BIO_POOL_SIZE, 0, BIOSET_NEED_BVECS);
 	if (!fs_bio_set)
 		panic("bio: can't allocate bios\n");
