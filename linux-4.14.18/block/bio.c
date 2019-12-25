@@ -79,6 +79,7 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 
 	mutex_lock(&bio_slab_lock);
 
+    /*a1.从bio_slabs当前已分配过的中找未用的slab或者slab_size相等的slab*/
 	i = 0;
 	while (i < bio_slab_nr) {
 		bslab = &bio_slabs[i];
@@ -93,9 +94,11 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 		i++;
 	}
 
+    /*a2.1找到符合条件的退出*/
 	if (slab)
 		goto out_unlock;
 
+    /*a2.2 未找到合适的,扩充bio_slabs*/
 	if (bio_slab_nr == bio_slab_max && entry == -1) {
 		new_bio_slab_max = bio_slab_max << 1;
 		new_bio_slabs = krealloc(bio_slabs,
@@ -106,17 +109,20 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 		bio_slab_max = new_bio_slab_max;
 		bio_slabs = new_bio_slabs;
 	}
+    /*a2.2.1 取下一个从未分配过的bio_slab*/
 	if (entry == -1)
 		entry = bio_slab_nr++;
 
 	bslab = &bio_slabs[entry];
 
+    /*a2.2.2 分配slab*/
 	snprintf(bslab->name, sizeof(bslab->name), "bio-%d", entry);
 	slab = kmem_cache_create(bslab->name, sz, ARCH_KMALLOC_MINALIGN,
 				 SLAB_HWCACHE_ALIGN, NULL);
 	if (!slab)
 		goto out_unlock;
 
+    /*a3.初始化slab*/
 	bslab->slab = slab;
 	bslab->slab_ref = 1;
 	bslab->slab_size = sz;
@@ -211,6 +217,7 @@ struct bio_vec *bvec_alloc(gfp_t gfp_mask, int nr, unsigned long *idx,
 	 * idx now points to the pool we want to allocate from. only the
 	 * 1-vec entry pool is mempool backed.
 	 */
+    /*优先从bvec_slabs数组中的slab cache中分配,否则从池中分配*/
 	if (*idx == BVEC_POOL_MAX) {
 fallback:
 		bvl = mempool_alloc(pool, gfp_mask);
@@ -443,6 +450,9 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, unsigned int nr_iovecs,
 	struct bio *bio;
 	void *p;
 
+    /* 
+    a1.分配bio(bio_set为空时直接从内存中分配,不为空时从内存池中分配) 
+    */
 	if (!bs) {
 		if (nr_iovecs > UIO_MAXIOV)
 			return NULL;
@@ -483,6 +493,7 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, unsigned int nr_iovecs,
 		    bs->rescue_workqueue)
 			gfp_mask &= ~__GFP_DIRECT_RECLAIM;
 
+        /*内存池:优先从内存源(slab cache)中分配,内存紧急时从池中分配*/
 		p = mempool_alloc(bs->bio_pool, gfp_mask);
 		if (!p && gfp_mask != saved_gfp) {
 			punt_bios_to_rescuer(bs);
@@ -497,9 +508,13 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, unsigned int nr_iovecs,
 	if (unlikely(!p))
 		return NULL;
 
+    /*a2.初始化bio*/
 	bio = p + front_pad;
 	bio_init(bio, NULL, 0);
 
+    /* 
+    a2.分配bio_vec (小于inline_vecs<=4>时直接使用内置的bi_inline_vecs,大于时重新分配)
+    */
 	if (nr_iovecs > inline_vecs) {
 		unsigned long idx = 0;
 
@@ -518,6 +533,7 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, unsigned int nr_iovecs,
 		bvl = bio->bi_inline_vecs;
 	}
 
+    /*a3.初始化bio*/
 	bio->bi_pool = bs;
 	bio->bi_max_vecs = nr_iovecs;
 	bio->bi_io_vec = bvl;
@@ -1993,12 +2009,21 @@ struct bio_set *bioset_create(unsigned int pool_size,
 	bio_list_init(&bs->rescue_list);
 	INIT_WORK(&bs->rescue_work, bio_alloc_rescue);
 
+    /*a1.创建slab cache*/
 	bs->bio_slab = bio_find_or_create_slab(front_pad + back_pad);
 	if (!bs->bio_slab) {
 		kfree(bs);
 		return NULL;
 	}
 
+    /*
+    a2.创建pool(bio_pool bvec_pool) 
+    < 
+      内核中内存池真实地只是相当于后备缓存,尽力一直保持一个空闲内存列表给紧急时使用, 
+      而在通常情况下有内存需求时还是从公共的内存中直接分配,这样的做法虽然有点霸占内存的嫌疑, 
+      但是可以从根本上保证关键应用在内存紧张时申请内存仍然能够成功.
+    >
+    */
 	bs->bio_pool = mempool_create_slab_pool(pool_size, bs->bio_slab);
 	if (!bs->bio_pool)
 		goto bad;
@@ -2012,6 +2037,7 @@ struct bio_set *bioset_create(unsigned int pool_size,
 	if (!(flags & BIOSET_NEED_RESCUER))
 		return bs;
 
+    /*a3.初始化rescue_workqueue 作用???*/
 	bs->rescue_workqueue = alloc_workqueue("bioset", WQ_MEM_RECLAIM, 0);
 	if (!bs->rescue_workqueue)
 		goto bad;
