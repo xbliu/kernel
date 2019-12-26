@@ -2279,8 +2279,17 @@ MD：multip Device 如raid(磁盘阵列),
  
 1.避免递归技巧(无限制递归必然会导致内核栈溢出) 
 1)在发生递归的时候它不将bio传递到下一层,而只是内部(通过使用current->bio_list)对bio进行排队. 
- 只有当父bio完成的时候,它才会提交这个请求.
- bio递归所产生的bio可以看成一个树,有根bio,父bio,兄弟bio,孩子bio,当前bio这四个概念.
- 只有当前bio处理完后,孩子bio才开始处理,最后是兄弟bio处理.
+只有当此bio完成的时候,它才会提交这个请求.也就是递归深度被控制在2以内.
+假设bio递归深度为3,每一次递归产生2个新的bio.如下图:
+	  	 bio_0
+	  /  		\
+	bio_1 	   bio_2
+	/   \      /   \
+bio_3  bio_4  bio_5 bio_6
+1)刚开始时current->bio_list[0] current->bio_list[1]为空
+1)bio_0处理时,bio_1,bio_2将加入到current->bio_list[0]列表中.
+2)对bio进行排序,low level > same level > current->bio_list[1]. bio_list[0] {bio_1, bio_2},取bio_1
+3)bio_1处理时,将bio_list[0]剩余的移到bio_list[1],bio_3 bio_4加入到bio_list[0]
+4)同2排序,bio_list[0] {bio_3,bio_4,bio_2} 转3处理.
 */
 
