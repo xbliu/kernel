@@ -34,14 +34,16 @@ struct bio_vec {
 };
 
 struct bvec_iter {
+    /*IO请求的第一个扇区地址*/
 	sector_t		bi_sector;	/* device address in 512 byte
 						   sectors */
-	unsigned int		bi_size;	/* residual I/O count */
-	/*当前未完成请求bio的在bvl_vec开始索引*/
+    /*剩余的IO请求大小*/
+    unsigned int		bi_size;	/* residual I/O count */
+	/*当前处理的bio vector的索引*/
 	unsigned int		bi_idx;		/* current index into bvl_vec */
-
+    /*已完成IO请求的字节数*/
 	unsigned int            bi_done;	/* number of bytes completed */
-
+    /*当前处理bio vector中已完成IO请求的字节数*/
 	unsigned int            bi_bvec_done;	/* number of bytes completed in
 						   current bvec */
 };

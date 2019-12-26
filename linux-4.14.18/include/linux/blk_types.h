@@ -48,7 +48,9 @@ struct blk_issue_stat {
  * stacking drivers)
  */
 struct bio {
+    /*request queue bio单向链表中下一个bio*/
 	struct bio		*bi_next;	/* request queue link */
+    /*关联的磁盘设备*/
 	struct gendisk		*bi_disk;
 	unsigned int		bi_opf;		/* bottom bits req flags,
 						 * top bits REQ_OP. Use
@@ -58,23 +60,24 @@ struct bio {
 	unsigned short		bi_ioprio;
 	unsigned short		bi_write_hint;
 	blk_status_t		bi_status;
+    /*分区号*/
 	u8			bi_partno;
 
 	/* Number of segments in this BIO after
 	 * physical address coalescing is performed.
 	 */
-    /*当完成物理地址合并之后剩余段的数量*/
+    /*物理地址合并之后段的数目*/
 	unsigned int		bi_phys_segments;
 
 	/*
 	 * To keep track of the max segment size, we account for the
 	 * sizes of the first and last mergeable segments in this bio.
 	 */
-	unsigned int		bi_seg_front_size;
-	unsigned int		bi_seg_back_size;
+	unsigned int		bi_seg_front_size; //第一个bio phys segment的大小
+	unsigned int		bi_seg_back_size; //最后一个bio phys segment的大小
 
 	struct bvec_iter	bi_iter;
-    /*关联bio的数量*/
+    /*关联bio的数量:用于bio拆分时防止原先的bio先完成请求从而过早释放biovec*/
 	atomic_t		__bi_remaining;
 	bio_end_io_t		*bi_end_io;
 
@@ -97,17 +100,18 @@ struct bio {
 #endif
 	};
 
-	/*已经使用的bio vector数目*/
+	/*当前存放bio vector元素的数目*/
 	unsigned short		bi_vcnt;	/* how many bio_vec's */
 
 	/*
 	 * Everything starting with bi_max_vecs will be preserved by bio_reset()
 	 */
-	/*拥有bio vector的数目*/
+	/*bio vector数组的长度(允许存放bio vector元素的上限)*/
 	unsigned short		bi_max_vecs;	/* max bvl_vecs we can hold */
     /*当前的bio引用计数 为0时free*/
 	atomic_t		__bi_cnt;	/* pin count */
 
+    /*实际存放bio vector的列表*/
 	struct bio_vec		*bi_io_vec;	/* the actual vec list */
 
 	struct bio_set		*bi_pool;
