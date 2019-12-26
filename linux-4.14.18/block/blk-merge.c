@@ -232,6 +232,9 @@ static unsigned int __blk_recalc_rq_segments(struct request_queue *q,
 	if (!bio)
 		return 0;
 
+    /* 
+      a1.对DISCARD,SECURE_ERASE,WRITE_ZEROES操作的bio segments为0;对WRITE_SAME为1
+    */
 	switch (bio_op(bio)) {
 	case REQ_OP_DISCARD:
 	case REQ_OP_SECURE_ERASE:
@@ -245,15 +248,23 @@ static unsigned int __blk_recalc_rq_segments(struct request_queue *q,
 	cluster = blk_queue_cluster(q);
 	seg_size = 0;
 	nr_phys_segs = 0;
+    /*a1.轮询requst所有bio计算rq上的segment数目*/
 	for_each_bio(bio) {
 		bio_for_each_segment(bv, bio, iter) {
 			/*
 			 * If SG merging is disabled, each bio vector is
 			 * a segment
 			 */
+            /*b1.若SG是禁止的,每一个bio vector为一个segment*/
 			if (no_sg_merge)
 				goto new_segment;
 
+            /* 
+            b2.检测之前的连续的bio vector与当前bio vector是否segment物理上连续,需要满足以下条件:
+              1)所有bio vector总大小不超过request的max_segment_size限制
+              2)bvprev与bv的page物理地址相邻即用来存放数据的内存地址相邻
+              3)bvprev与bv不能跨越segment边界即bvPrev的start到bv的end不能横跨两个segment
+            */
 			if (prev && cluster) {
 				if (seg_size + bv.bv_len
 				    > queue_max_segment_size(q))
@@ -262,16 +273,18 @@ static unsigned int __blk_recalc_rq_segments(struct request_queue *q,
 					goto new_segment;
 				if (!BIOVEC_SEG_BOUNDARY(q, &bvprv, &bv))
 					goto new_segment;
-
+                
+                /*继续下一个bio vector检查*/
 				seg_size += bv.bv_len;
 				bvprv = bv;
 				continue;
 			}
 new_segment:
+            /*b3.下一个segment计算*/
 			if (nr_phys_segs == 1 && seg_size >
 			    fbio->bi_seg_front_size)
 				fbio->bi_seg_front_size = seg_size;
-
+            
 			nr_phys_segs++;
 			bvprv = bv;
 			prev = 1;
@@ -280,6 +293,7 @@ new_segment:
 		bbio = bio;
 	}
 
+    /*a2.更新第一个bio的bi_seg_front_size与最后一个bio的bi_seg_back_size*/
 	if (nr_phys_segs == 1 && seg_size > fbio->bi_seg_front_size)
 		fbio->bi_seg_front_size = seg_size;
 	if (seg_size > bbio->bi_seg_back_size)
@@ -302,11 +316,18 @@ void blk_recount_segments(struct request_queue *q, struct bio *bio)
 	unsigned short seg_cnt;
 
 	/* estimate segment number by bi_vcnt for non-cloned bio */
+    /* 
+      a1.clone bio只计算当前未完成bio vector的数量,否则所有的在使用的bio vector
+    */
 	if (bio_flagged(bio, BIO_CLONED))
 		seg_cnt = bio_segments(bio);
 	else
 		seg_cnt = bio->bi_vcnt;
 
+    /*
+    a2.NO_SG_MERGE且小于rq的max_segments不进行计算,否则计算 
+    (NO_SG_MERGE时segment不够用时才计算,要不然跟SG_MERGE没什么区别了)
+    */
 	if (test_bit(QUEUE_FLAG_NO_SG_MERGE, &q->queue_flags) &&
 			(seg_cnt < queue_max_segments(q)))
 		bio->bi_phys_segments = seg_cnt;
@@ -318,6 +339,7 @@ void blk_recount_segments(struct request_queue *q, struct bio *bio)
 		bio->bi_next = nxt;
 	}
 
+    /*a3.表示bio phys segment是可用的,避免重复计算*/
 	bio_set_flag(bio, BIO_SEG_VALID);
 }
 EXPORT_SYMBOL(blk_recount_segments);

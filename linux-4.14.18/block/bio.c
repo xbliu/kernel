@@ -1282,7 +1282,10 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 	if (offset)
 		nr_pages++;
 
-	/*a2.分配bio_map_data,将用户空间的iov_iter复制到内核空间*/
+    /* 
+      a2.分配bio_map_data,将iov_iter复制到内核空间
+      <iov_iter 可能指向栈空间或者拥有短的生命期,所以进行深度复制,防止使用过程中被释放掉>
+    */
 	bmd = bio_alloc_map_data(iter->nr_segs, gfp_mask);
 	if (!bmd)
 		return ERR_PTR(-ENOMEM);
@@ -1349,7 +1352,7 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 	/*
 	 * success
 	 */
-	 /*a5.从bio_map_data中复制数据到bio*/
+	 /*a5.从iov_iter中复制数据到bio*/
 	if (((iter->type & WRITE) && (!map_data || !map_data->null_mapped)) ||
 	    (map_data && map_data->from_user)) {
 		ret = bio_copy_from_iter(bio, *iter);
@@ -1714,6 +1717,18 @@ cleanup:
  * Simply disabling the call to bio_set_pages_dirty() is a good way to test the
  * deferred bio dirtying paths.
  */
+
+/*
+    bio_set_pages_dirty与bio_check_pages_dirty 支持在direct-io中使用. 
+bio_set_pages_dirty不能运行在中断上下文(需要上锁,此锁在中断中不安全) 
+bio_check_pages_dirty在中断上下文件检查是否所有的page dirty.要不是在进程上下文件redirty. 
+    compound pages意味着从hugetlb page中读取。此处的逻辑不合适compound pages,因为VM并非在所 
+有情况下都向下跟踪head page.但是compound pages的dirty没有意义:VM根本不处理它们.所以早期阶段 
+跳过compound pages的处理. 
+    由于direct-io直接使用user pages(get_user_pages)所以很难测试此部分代码.
+is_page_cache_freeable返回false且VM将不清除这些page.但要是映射到pagecache,其它代码能够 
+清除这些page(如flusher线程).
+*/
 
 /*
  * bio_set_pages_dirty() will mark all the bio's pages as dirty.
@@ -2227,3 +2242,30 @@ static int __init init_bio(void)
 	return 0;
 }
 subsys_initcall(init_bio);
+
+
+/*
+一.bio一些概念 
+bio来源于pagecache与direct-io操作,所以向pagecache与direct-io提供供api. 
+bio phys_segments计算时机: 
+    1)首次获取
+    2)bio_add_pc_page加入page且大于req max_segments时重新统计
+bio读写相关操作单位相关概念: 
+Page->segment->block->sector:
+    page就是内存映射的最小单位,文件操作的基本单位.
+    segment就是一个page中我们要操作的一部分,由若干个相邻的块组成.bio操作的基本单位.
+( 
+Q:为什么有segment? 
+A:机械硬盘传输数据总时间为磁头寻道时间+旋转延迟+数据传输时间,尽可能的连续读多个扇区, 
+可以节省寻道时间,从而提高IO性能.page内有多个block组成,但所有block不一定都在物理上连续, 
+故尽可能的将连续的block组成segment<bio vector>提交io request. 
+ 
+寻道时间:磁头从开始移动到数据所在的磁道所花费时间. 
+旋转延迟:磁头从所在磁道移动到操作的扇区所花费时间 
+数据传输时间:整个数据传输所花费的时间
+)
+    block是逻辑上的进行数据存取的最小单位,文件系统传输数据的基本单位.
+    sector是硬件设备传输数据的基本单位.
+二.bio关键核心
+bio关键处理:避免递归与plugging-unplug
+*/

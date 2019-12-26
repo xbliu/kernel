@@ -334,14 +334,14 @@ enum blk_zoned_model {
 
 struct queue_limits {
 	unsigned long		bounce_pfn;
-	unsigned long		seg_boundary_mask;
+	unsigned long		seg_boundary_mask; /*段边界掩码*/
 	unsigned long		virt_boundary_mask;
 
 	unsigned int		max_hw_sectors;
 	unsigned int		max_dev_sectors;
 	unsigned int		chunk_sectors;
-	unsigned int		max_sectors;
-	unsigned int		max_segment_size;
+	unsigned int		max_sectors; /*最大的扇区数*/
+	unsigned int		max_segment_size; /*最大的段尺寸*/ 
 	unsigned int		physical_block_size;
 	unsigned int		alignment_offset;
 	unsigned int		io_min;
