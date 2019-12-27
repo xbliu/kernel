@@ -2267,8 +2267,11 @@ A:机械硬盘传输数据总时间为磁头寻道时间+旋转延迟+数据传�
     block是逻辑上的进行数据存取的最小单位,文件系统传输数据的基本单位.
     sector是硬件设备传输数据的基本单位.
 二.bio关键核心
-bio关键处理:避免递归技术与plugging-unplug[bio拆分与合并]
-bio递归: 
+bio关键处理:避免递归调用(recursion avoidance)和队列激活(queue plugging)[bio拆分与合并]
+bio递归:
+在存储方案里，经常用到"md"[mutiple device](软RAID就是md的一个实例)和"dm"[device mapper](用于multipath和LVM2)这两种虚拟设备, 
+也常叫做栈式设备,由多个块设备按树的形式组织起来,它们会沿着设备树往下一层一层对bio请求作修改和传递.
+如果采用递归的简单的实现，在设备树很深的情况下，会占用大量的内核栈空间.
 DM：Device Mapper 如LVM(逻辑卷管理)
 MD：multip Device 如raid(磁盘阵列), 
 磁盘阵列三个关键技术: 
@@ -2278,18 +2281,59 @@ MD：multip Device 如raid(磁盘阵列),
 不管1还是2功能都可能造成bio递归,虚拟块设备提交的bio需修改发送到下一层的块设备上. 
  
 1.避免递归技巧(无限制递归必然会导致内核栈溢出) 
-1)在发生递归的时候它不将bio传递到下一层,而只是内部(通过使用current->bio_list)对bio进行排队. 
-只有当此bio完成的时候,它才会提交这个请求.也就是递归深度被控制在2以内.
+1)在发生递归的时候它不将bio请求发送到下一层设备上,而只是放到进程内部的一个队列上 
+(current->bio_list).等到上一次bio请求处理完以后,然后再提交这一层的请求
+<linux4.6.7 没有对修改的bio进行排队处理,只是放到bio_list上,按照加入的顺序依次处理>.
+也就是递归深度始终被控制在2以内.由于由于generic_make_request()不会阻塞以等待bio处理完成, 
+即使延迟一会再处理请求都是没问题的.
+2) 1方案通常工作得很好,但有时候发生死锁: 
+当递归发生时,bio要排队等待之前已经提交的bio处理完成,若要等的bio一直在current->bio_list队列上而得不到处理, 
+它就会一直等下去. 
+<linux4.6.7 假设bio_0-->bio_1,bio_2-->bio_2,bio_3,bio_4,而bio_2需等待bio_1完成,而bio_1分裂的bio3,bio_4仍在bio_list上>
+情景分析:以bio拆分为例,当一个bio的目标设备在大小或对齐上有限制时,make_request_fn()可能会把bio拆成两部分, 
+然后再分别处理,但bio拆分需给第二个bio结构体分配内存.内存紧张时,可回收内存,需要把脏页通过块层写出去, 
+若回写过程时,又需分配内存,那就麻烦了.一个标准的机制使用mempool,为某种关键目的预留一些内存. 
+从mempool分配内存需要等待其它mempool的使用者归还一些内存,而不用等待整个内存回收算法完成. 
+当使用mempool分配bio内存时,这种等待可能会导致generic_make_request()死锁. 
+  为解决上面描述的死锁问题:可为每一个分配bio的"mempool"分配一个"rescuer"线程.如果发现bio分配不出来, 
+所有在currect->bio_list的bio就会被取下来,交个相应的bioset线程来处理.这个方法相当复杂,导致创建了很多bioset线程, 
+但是大多时候派不上用场,只是为了解决一个特殊的死锁情况,代价太高了.通常,死锁跟bio拆分有关系, 
+但是它们不总是要等待mempool分配.
+  另一种解决办法:
+Linux 4.11内核,引入了另一个解决方案,对generic_make_request()做了改动,好处是更通用,代价小, 
+但是却对驱动程序提出了一点要求.发生bio拆分时,其中一个bio要直接提交给generic_make_request()来安排最合适的时间处理,
+另一个bio可以用任何合适的方式处理,这样generic_make_request()就有了更强的控制力. 
+根据bio在提交时在设备栈中的深度,对bio进行排序后,总是先处理更低层设备的bio,再处理较高层设备的bio. 
+ 
+目前方案解析： 
+1)在发生递归的时候它不将bio请求发送到下一层设备上,而只是放到进程内部的一个队列上 
+(current->bio_list)并对bio进行排队.等到上一次bio请求处理完以后,然后再提交这一层的请求. 
+2)bio拆分时需提交其中一个bio,另一个可以用任何合适的方式处理. 
+ 
 假设bio递归深度为3,每一次递归产生2个新的bio.如下图:
 	  	 bio_0
 	  /  		\
 	bio_1 	   bio_2
 	/   \      /   \
 bio_3  bio_4  bio_5 bio_6
-1)刚开始时current->bio_list[0] current->bio_list[1]为空
-1)bio_0处理时,bio_1,bio_2将加入到current->bio_list[0]列表中.
-2)对bio进行排序,low level > same level > current->bio_list[1]. bio_list[0] {bio_1, bio_2},取bio_1
-3)bio_1处理时,将bio_list[0]剩余的移到bio_list[1],bio_3 bio_4加入到bio_list[0]
-4)同2排序,bio_list[0] {bio_3,bio_4,bio_2} 转3处理.
-*/
+a.刚开始时current->bio_list[0] current->bio_list[1]为空
+b.bio_0处理时,bio_1,bio_2将加入到current->bio_list[0]列表中.
+c.对bio进行排序,low level > same level > current->bio_list[1]. bio_list[0] {bio_1, bio_2},取bio_1
+d.bio_1处理时,将bio_list[0]剩余的移到bio_list[1],bio_3 bio_4加入到bio_list[0]
+e.同b排序,bio_list[0] {bio_3,bio_4,bio_2} 转3处理. 
+ 
+队列激活(queue plugging)： 
+预期在一定时间内聚集一批请求,然后在一点延迟后就开始真正处理IO,而不是一直聚积特别多的请求. 
+1)blk_start_plug开始聚集请求
+2)当blk_finish_plug()被调用时,或调用schedule()进行进程切换时(比如等待mutex锁,内存分配等), 
+保存在current->plug列表上的所有请求就要往底层设备提交. 
+  调用schedule()进行进程切换时,积蓄的bio会被全部处理,这个事实意为着bio处理的延迟只会发生在新的bio请求不断产生期间. 
+这样可以避免出现循环等待的问题,试想一个进程在等待一个bio请求处理完成而进入睡眠,但是这个bio请求还在plug列表上并没有下发给底层设备. 
+
+进程级别的plugging机制主要的好处: 
+一是相关性最强的bio会更容易聚集起来,以便批量处理.
+二是这样很大程度上减少了队列锁的竞争.
+如果没有进程级别的plugging处理,那么每一个bio请求到来时,都要进行一次spinlock或原子操作. 
+有了这样的机制,每一个进程就有一个bio列表,把进程bio列表往设备队列里合并时,只需要上一次锁就够了 
+*/ 
 
