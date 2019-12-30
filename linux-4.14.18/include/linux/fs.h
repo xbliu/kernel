@@ -1982,9 +1982,9 @@ static inline void init_sync_kiocb(struct kiocb *kiocb, struct file *filp)
  *
  * Q: What is the difference between I_WILL_FREE and I_FREEING?
  */
-#define I_DIRTY_SYNC		(1 << 0)
-#define I_DIRTY_DATASYNC	(1 << 1)
-#define I_DIRTY_PAGES		(1 << 2)
+#define I_DIRTY_SYNC		(1 << 0) //inode元数据发生变化
+#define I_DIRTY_DATASYNC	(1 << 1) //inode数据内容与元数据同时发生变化 如追加文件
+#define I_DIRTY_PAGES		(1 << 2) //inode数据内容发生变化
 #define __I_NEW			3
 #define I_NEW			(1 << __I_NEW)
 #define I_WILL_FREE		(1 << 4)
@@ -1996,7 +1996,7 @@ static inline void init_sync_kiocb(struct kiocb *kiocb, struct file *filp)
 #define __I_DIO_WAKEUP		9
 #define I_DIO_WAKEUP		(1 << __I_DIO_WAKEUP)
 #define I_LINKABLE		(1 << 10)
-#define I_DIRTY_TIME		(1 << 11)
+#define I_DIRTY_TIME		(1 << 11)  //inode的时间部分被修改(acm)
 #define __I_DIRTY_TIME_EXPIRED	12
 #define I_DIRTY_TIME_EXPIRED	(1 << __I_DIRTY_TIME_EXPIRED)
 #define I_WB_SWITCH		(1 << 13)

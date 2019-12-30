@@ -2135,6 +2135,11 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 	 * Don't do this for I_DIRTY_PAGES - that doesn't actually
 	 * dirty the inode itself
 	 */
+	/*
+	a1.通知文件系统处理dirty inode.
+	I_DIRTY_TIME并不一定与I_DIRTY_SYNC同时存在,若sb支持MS_LAZYTIME.
+	I_DIRTY_SYNC变化说明有可能是时间相关部分发生变化,也有可能是大小或者其它.
+	*/
 	if (flags & (I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_TIME)) {
 		trace_writeback_dirty_inode_start(inode, flags);
 
@@ -2143,6 +2148,12 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 
 		trace_writeback_dirty_inode(inode, flags);
 	}
+	/*
+	a2.I_DIRTY_INODE表示inode本身发生变化了,回写时时间信息会跟着同步.所以清除I_DIRTY_TIME
+	避免与支持MS_LAZYTIME特性混淆.
+	MS_LAZYTIME从加入b_dirty_time那段代码来看:若inode本身只有时间部分变化,临近的两次同类变化,
+	dirtied_when与dirtied_time_when前面的值会覆盖,以达到延迟更新时间的效果.
+	*/
 	if (flags & I_DIRTY_INODE)
 		flags &= ~I_DIRTY_TIME;
 	dirtytime = flags & I_DIRTY_TIME;
@@ -2153,6 +2164,12 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 	 */
 	smp_mb();
 
+	/*
+	a3.以下情况不处理:
+	1)inode的要设置的状态部分未发生改变
+	2)I_DIRTY_INODE表示inode本身发生变化了,
+	  回写时时间信息会跟着同步,已加入b_dirty列表,不能加入到b_dirty_time列表(否则会打乱inode变化的先后时间顺序).
+	*/
 	if (((inode->i_state & flags) == flags) ||
 	    (dirtytime && (inode->i_state & I_DIRTY_INODE)))
 		return;
@@ -2161,13 +2178,16 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 		block_dump___mark_inode_dirty(inode);
 
 	spin_lock(&inode->i_lock);
+	/*a4.再次判断,因为获取锁之前inode状态可能已经发生改变*/
 	if (dirtytime && (inode->i_state & I_DIRTY_INODE))
 		goto out_unlock_inode;
 	if ((inode->i_state & flags) != flags) {
+		/*b1.检查是否为脏inode*/
 		const int was_dirty = inode->i_state & I_DIRTY;
 
 		inode_attach_wb(inode, NULL);
 
+		/*b2.清除I_DIRTY_TIME,更新inode状态*/
 		if (flags & I_DIRTY_INODE)
 			inode->i_state &= ~I_DIRTY_TIME;
 		inode->i_state |= flags;
@@ -2177,6 +2197,7 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 		 * The unlocker will place the inode on the appropriate
 		 * superblock list, based upon its state.
 		 */
+		/*b3.inode正在回写当中,不做处理*/ 
 		if (inode->i_state & I_SYNC)
 			goto out_unlock_inode;
 
@@ -2184,10 +2205,12 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 		 * Only add valid (hashed) inodes to the superblock's
 		 * dirty list.  Add blockdev inodes as well.
 		 */
+		/*b4.常规文件只有hashed后才能加入到dirty list.块设备无需如此*/
 		if (!S_ISBLK(inode->i_mode)) {
 			if (inode_unhashed(inode))
 				goto out_unlock_inode;
 		}
+		/*b5.即将free的inode不处理*/
 		if (inode->i_state & I_FREEING)
 			goto out_unlock_inode;
 
@@ -2195,6 +2218,7 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 		 * If the inode was already on b_dirty/b_io/b_more_io, don't
 		 * reposition it (that would break b_dirty time-ordering).
 		 */
+		/*b6.只有未入b_dirty/b_io/b_more_io列表中才可加入其中<否则会打乱inode变化的先后时间顺序>*/
 		if (!was_dirty) {
 			struct bdi_writeback *wb;
 			struct list_head *dirty_list;
@@ -2206,10 +2230,11 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 			     !test_bit(WB_registered, &wb->state),
 			     "bdi-%s not registered\n", wb->bdi->name);
 
+			/*c1.记录dirty的时间*/	 
 			inode->dirtied_when = jiffies;
 			if (dirtytime)
 				inode->dirtied_time_when = jiffies;
-
+			/*c2.I_DIRTY加入到b_dirty列表,否则加入到b_dirty_time<I_DIRTY_TIME>*/
 			if (inode->i_state & (I_DIRTY_INODE | I_DIRTY_PAGES))
 				dirty_list = &wb->b_dirty;
 			else
@@ -2227,6 +2252,7 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 			 * to make sure background write-back happens
 			 * later.
 			 */
+			 /*c3.首次dirty inode时唤醒刷新线程*/
 			if (bdi_cap_writeback_dirty(wb->bdi) && wakeup_bdi)
 				wb_wakeup_delayed(wb);
 			return;
