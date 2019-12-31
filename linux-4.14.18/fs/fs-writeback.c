@@ -2123,6 +2123,15 @@ static noinline void block_dump___mark_inode_dirty(struct inode *inode)
  * page->mapping->host, so the page-dirtying time is recorded in the internal
  * blockdev inode.
  */
+/*
+inode dirty相关位先后变化与dirty_list列表变化,以及事件是否支持处理重复多次变化
+I_DIRTY_INODE   I_DIRTY_TIME     I_DIRTY_PAGES  dirty_list                repeatedly
+   NO              NO                NO          NULL                       -
+   YES<1>           -                -           NULL -> b_dirty            NO
+   NO              YES               NO          NULL -> b_dirty_time       YES
+   NO              NO                YES         NULL -> b_dirty            NO
+    ●             YES<1>              ●          b_dirty_time -> b_dirty    NO
+*/
 void __mark_inode_dirty(struct inode *inode, int flags)
 {
 #define I_DIRTY_INODE (I_DIRTY_SYNC | I_DIRTY_DATASYNC)
