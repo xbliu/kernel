@@ -48,7 +48,7 @@ enum writeback_sync_modes {
 enum wb_reason {
 	WB_REASON_BACKGROUND,
 	WB_REASON_VMSCAN,
-	WB_REASON_SYNC,
+	WB_REASON_SYNC, /*用户主动同步*/
 	WB_REASON_PERIODIC,
 	WB_REASON_LAPTOP_TIMER,
 	WB_REASON_FREE_MORE_MEM,
@@ -69,6 +69,14 @@ enum wb_reason {
  * always on the stack, and hence need no locking.  They are always initialised
  * in a manner such that unspecified fields are set to zero.
  */
+ /*
+ 主要用于回写带宽控制,一次回写多少页才不致于影响其它任务
+ 控制回写该如何做
+ writeback_control:针对实现
+ wb_writeback_work:针对发起者<需求>
+ wb_writeback_work是writeback_control的子集,
+ 也可以说writeback_control是wb_writeback_work任务的分解,每次决定完成wb_writeback_work多少进度
+*/
 struct writeback_control {
 	long nr_to_write;		/* Write this many pages, and decrement
 					   this for each page written */
@@ -79,24 +87,25 @@ struct writeback_control {
 	 * a hint that the filesystem need only write out the pages inside that
 	 * byterange.  The byte at `end' is included in the writeout request.
 	 */
+	/*inode数据内容的起始长度*/ 
 	loff_t range_start;
 	loff_t range_end;
 
-	enum writeback_sync_modes sync_mode;
+	enum writeback_sync_modes sync_mode; //同步方式:等待IO请求完成还是等待IO请求提交完成
 
     /*定期更新目的的回写任务*/
-	unsigned for_kupdate:1;		/* A kupdate writeback */
-	unsigned for_background:1;	/* A background writeback */
+	unsigned for_kupdate:1;		/* A kupdate writeback 周期性回写*/
+	unsigned for_background:1;	/* A background writeback 脏页数量上限回写*/
     /*回写标记为PAGECACHE_TAG_TOWRITE的页*/
 	unsigned tagged_writepages:1;	/* tag-and-write to avoid livelock */
-	unsigned for_reclaim:1;		/* Invoked from the page allocator */
+	unsigned for_reclaim:1;		/* Invoked from the page allocator 内存分配不足时回写*/
     /*更新操作是逐个检查地址空间的页面,
       当检查到最后一个时需要回绕到地址空间的起始位置从头再来
       此时需要将该标志位置为1
       (是否循环扫描inode的mapping address space)
     */
 	unsigned range_cyclic:1;	/* range_start is cyclic */
-	unsigned for_sync:1;		/* sync(2) WB_SYNC_ALL writeback */
+	unsigned for_sync:1;		/* sync(2) WB_SYNC_ALL writeback 用户主动同步*/
 #ifdef CONFIG_CGROUP_WRITEBACK
 	struct bdi_writeback *wb;	/* wb this writeback is issued under */
 	struct inode *inode;		/* inode being written out */
