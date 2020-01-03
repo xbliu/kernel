@@ -1136,8 +1136,8 @@ static int move_expired_inodes(struct list_head *delaying_queue,
 	/* just one sb in list, splice to dispatch_queue and we're done */
 	/*
 	a3.若都属于一个文件系统,则直接移到dispatch_queue,
-	否则每一次将一个文件系统的所有inode从tmp中一起移动到dispatch_queue直到tmp为空.
-	<一个文件系统所有inode在dispatch_queue中连续>
+	否则从tmp中聚集每个文件系统的所有inode统一加入到dispatch_queue.
+	<每个文件系统所有inode在dispatch_queue中连续>
 	*/
 	if (!do_sb_sort) {
 		list_splice(&tmp, dispatch_queue);
@@ -1794,6 +1794,20 @@ static long writeback_inodes_wb(struct bdi_writeback *wb, long nr_pages,
  * older_than_this takes precedence over nr_to_write.  So we'll only write back
  * all dirty pages if they are all attached to "old" mappings.
  */
+/*
+1.回写任务结束的条件: 
+     1)回写脏页数目达到work的预期nr_pages 
+     2)没有脏页可回写 
+     3)对于background回写,脏页数目小于阀值
+2.回写work的优先级: 
+    1)普通work(用户主动同步,内存不足,线程不足等)
+    2)kupdate work
+    3)background work
+Q:为什么普通work要高于kupdate与background? 
+A:都是将脏页同步到磁盘,普通work若低于这两,将会影响用户使用. 
+但若普通work一直有,则可能会影响kupdate迟迟得不到运行,从而导致某些脏页一直同步不到磁盘. 
+(普通work不一定刷新所有脏页) 
+*/
 static long wb_writeback(struct bdi_writeback *wb,
 			 struct wb_writeback_work *work)
 {
