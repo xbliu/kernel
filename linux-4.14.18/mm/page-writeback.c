@@ -2161,6 +2161,10 @@ EXPORT_SYMBOL(tag_pages_for_writeback);
  * tag we set). The rule we follow is that TOWRITE tag can be cleared only
  * by the process clearing the DIRTY tag (and submitting the page for IO).
  */
+ /*
+ Q:什么时候PAGECACHE_TAG_TOWRITE?
+ A:回写的时候wbc->sync_mode == WB_SYNC_ALL 或 wbc->tagged_writepages
+*/
 int write_cache_pages(struct address_space *mapping,
 		      struct writeback_control *wbc, writepage_t writepage,
 		      void *data)
@@ -2187,7 +2191,7 @@ int write_cache_pages(struct address_space *mapping,
 			cycled = 1;
 		else
 			cycled = 0;
-		end = -1;
+		end = -1; //pgoff_t是unsigned long,故-1是无符号的最大值.
 	} else {
 		index = wbc->range_start >> PAGE_SHIFT;
 		end = wbc->range_end >> PAGE_SHIFT;

@@ -1359,7 +1359,9 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	 * inode metadata is written back correctly.
 	 */
     /*
-    a2.等待数据回写完成       sync(2):sync/synfs 回写所有缓存或某个文件系统缓存
+    a2.完整性回写等待数据回写完成 
+    (数据内容都已写入磁盘,mapping数据(eg:ext2 inode indirect block)肯定也要写入)
+      sync(2):sync/synfs 回写所有缓存或某个文件系统缓存
       for_sync是指sync(2)回写即用户主动同步,因为它会保证元数据正确的刷入磁盘故无需做以动作.
     */
 	if (wbc->sync_mode == WB_SYNC_ALL && !wbc->for_sync) {
@@ -1619,7 +1621,7 @@ static long writeback_sb_inodes(struct super_block *sb,
 			redirty_tail(inode, wb);
 			continue;
 		}
-		/*非同步回写时,对正在回写的inode移入到b_more_io列表中,继续处理下一个inode*/
+		/*异步回写时,对正在回写的inode移入到b_more_io列表中,继续处理下一个inode*/
 		if ((inode->i_state & I_SYNC) && wbc.sync_mode != WB_SYNC_ALL) {
 			/*
 			 * If this inode is locked for writeback and we are not
@@ -1662,7 +1664,7 @@ static long writeback_sb_inodes(struct super_block *sb,
 		 * We use I_SYNC to pin the inode in memory. While it is set
 		 * evict_inode() will wait so the inode cannot be freed.
 		 */
-		__writeback_single_inode(inode, &wbc);//回写单个inode下所有的脏页
+		__writeback_single_inode(inode, &wbc);//回写单个inode下的脏页
 
 		wbc_detach_inode(&wbc);
 		work->nr_pages -= write_chunk - wbc.nr_to_write;
@@ -1803,10 +1805,20 @@ static long writeback_inodes_wb(struct bdi_writeback *wb, long nr_pages,
     1)普通work(用户主动同步,内存不足,线程不足等)
     2)kupdate work
     3)background work
-Q:为什么普通work要高于kupdate与background? 
+Q:为什么普通work要高于kupdate与background?  
 A:都是将脏页同步到磁盘,普通work若低于这两,将会影响用户使用. 
 但若普通work一直有,则可能会影响kupdate迟迟得不到运行,从而导致某些脏页一直同步不到磁盘. 
-(普通work不一定刷新所有脏页) 
+(普通work不一定刷新所有脏页)  <也可参见活锁>
+3.避免活锁:
+1)每个work设置了回写截止时间
+2)kupdate与background每次处理完后会再次更新时间且优先级低于其它work,这样可以尽可能回写所有的dirty inode.
+又不会出现活锁的情况.
+4.什么情况下dirty inode被移动到b_more_io呢?为什么不直接移动到b_dirty list上呢？
+1)dirty inode正在异步回写的时候 <fat_flush或nfs_unlink>
+2)本次回写任务已完成<回写页数已完成>,但最后处理的inode还有dirty pages未处理完,放入b_more_io中下次work继续处理
+猜想:b_dirty上锁争抢激烈时,符合b_more_io的情况必然需要插入b_dirty上,造成效率更加低下
+ 2)中情况虽然一次work只有一个,但b_io上的dirty inode需要多个work才能完成,
+所以b_io一次处理下来可有多个dirty inode在其上.
 */
 static long wb_writeback(struct bdi_writeback *wb,
 			 struct wb_writeback_work *work)
@@ -1853,6 +1865,18 @@ static long wb_writeback(struct bdi_writeback *wb,
 		 * handled by these works yielding to any other work so we are
 		 * safe.
 		 */
+		/*
+		我们希望Kupdate与background work能够回写所有需要回写的inode.
+		避免活锁是让其他work优先于它们处理.
+		Q:为什么Kupdate与background work在这里更新时间,for循环之外不是已经记录了吗？
+		难道其它的work不需要更新吗?
+		A:kupdate与background 设计目的是尽可能回写所有的dirty inode.
+		queue_io根椐截止时间oldest_jif将小于它的dirty inode从b_dirty移动b_io.
+		若不在此更新时间,则获取不到更多的dirty inode处理.
+		这就导致dirty inode>=处理速度的情况下,kupdate与background一直运转而其它work得
+		不到机会运转-活锁.而这里之前已经处理了活锁的情况,故这是安全的.
+		而其它work若在这里更新时间,岂不是会出现活锁的情况.
+		*/
 		if (work->for_kupdate) {
 			oldest_jif = jiffies -
 				msecs_to_jiffies(dirty_expire_interval * 10);
