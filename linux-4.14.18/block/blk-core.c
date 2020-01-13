@@ -359,6 +359,7 @@ EXPORT_SYMBOL(blk_sync_queue);
  *    stopped. Must be called with the queue lock held and interrupts
  *    disabled. See also @blk_run_queue.
  */
+/*处理request_queue中的等待的request*/
 inline void __blk_run_queue_uncond(struct request_queue *q)
 {
 	lockdep_assert_held(q->queue_lock);
@@ -816,6 +817,7 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 {
 	struct request_queue *q;
 
+    /*a1.从blk_requestq_cachep分配request_queue*/
 	q = kmem_cache_alloc_node(blk_requestq_cachep,
 				gfp_mask | __GFP_ZERO, node_id);
 	if (!q)
@@ -825,12 +827,16 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 	if (q->id < 0)
 		goto fail_q;
 
+    /*a2.创建bioset*/
 	q->bio_split = bioset_create(BIO_POOL_SIZE, 0, BIOSET_NEED_BVECS);
 	if (!q->bio_split)
 		goto fail_id;
+
 	/*
-	分配backing_dev_info<初始化预读页等信息>
-	初始化write back<wb_init>
+    a3.                        >
+    分配backing_dev_info<初始化预读页等信息>
+    初始化write back<wb_init> 
+    初始化delay_work                           >
 	*/
 	q->backing_dev_info = bdi_alloc_node(gfp_mask, node_id);
 	if (!q->backing_dev_info)
@@ -955,7 +961,7 @@ EXPORT_SYMBOL(blk_init_queue);
 /*
 初始化 block queue
 目前看三个注意的地方:
-	request_fn_proc
+	request_fn
 	make_request_fn
 	struct elevator_type
 什么时候调用blcok queue???
@@ -987,10 +993,19 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio);
 init make request<blk_queue_bio>
 init elevator <default to using mq-deadline,then noop>
 */
+/*
+实始化元素包括以下: 
+1)flush_rq 
+2)request_list 
+3)timeout_work 
+4)make_request 
+5)elevator
+*/
 int blk_init_allocated_queue(struct request_queue *q)
 {
 	WARN_ON_ONCE(q->mq_ops);
 
+    /*a1.初始化flush_rq*/
 	q->fq = blk_alloc_flush_queue(q, NUMA_NO_NODE, q->cmd_size);
 	if (!q->fq)
 		return -ENOMEM;
@@ -998,15 +1013,18 @@ int blk_init_allocated_queue(struct request_queue *q)
 	if (q->init_rq_fn && q->init_rq_fn(q, q->fq->flush_rq, GFP_KERNEL))
 		goto out_free_flush_queue;
 
+    /*a2.初始化request_list*/
 	if (blk_init_rl(&q->root_rl, q, GFP_KERNEL))
 		goto out_exit_flush_rq;
 
+    /*a3.初始化超时work*/
 	INIT_WORK(&q->timeout_work, blk_timeout_work);
 	q->queue_flags		|= QUEUE_FLAG_DEFAULT;
 
 	/*
 	 * This also sets hw/phys segments, boundary and size
 	 */
+    /*a4.实始化make requst*/
 	blk_queue_make_request(q, blk_queue_bio);
 
 	q->sg_reserved_size = INT_MAX;
@@ -1015,6 +1033,7 @@ int blk_init_allocated_queue(struct request_queue *q)
 	mutex_lock(&q->sysfs_lock);
 
 	/* init elevator */
+    /*a5.初始化elevator*/
 	if (elevator_init(q, NULL)) {
 		mutex_unlock(&q->sysfs_lock);
 		goto out_exit_flush_rq;
