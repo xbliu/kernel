@@ -103,19 +103,19 @@ struct partition_meta_info {
 };
 
 struct hd_struct {
-	sector_t start_sect;
+	sector_t start_sect; //开始扇区
 	/*
 	 * nr_sects is protected by sequence counter. One might extend a
 	 * partition while IO is happening to it and update of nr_sects
 	 * can be non-atomic on 32bit machines with 64bit sector_t.
 	 */
-	sector_t nr_sects;
+	sector_t nr_sects; //扇区数目
 	seqcount_t nr_sects_seq;
 	sector_t alignment_offset;
 	unsigned int discard_alignment;
 	struct device __dev;
 	struct kobject *holder_dir;
-	int policy, partno;
+	int policy, partno; //分区号
 	struct partition_meta_info *info;
 #ifdef CONFIG_FAIL_MAKE_REQUEST
 	int make_it_fail;
@@ -149,9 +149,9 @@ enum {
 
 struct disk_part_tbl {
 	struct rcu_head rcu_head;
-	int len;
-	struct hd_struct __rcu *last_lookup;
-	struct hd_struct __rcu *part[];
+	int len; //分区个数
+	struct hd_struct __rcu *last_lookup; //上次查找的分区(加速查找)
+	struct hd_struct __rcu *part[]; //分区信息
 };
 
 struct disk_events;
@@ -173,6 +173,7 @@ struct gendisk {
 	/* major, first_minor and minors are input parameters only,
 	 * don't use directly.  Use disk_devt() and disk_max_parts().
 	 */
+	/*块设备相关*/ 
 	int major;			/* major number of driver */
 	int first_minor;
 	int minors;                     /* maximum number of minors, =1 for
@@ -181,6 +182,7 @@ struct gendisk {
 	char disk_name[DISK_NAME_LEN];	/* name of major driver */
 	char *(*devnode)(struct gendisk *gd, umode_t *mode);
 
+	/*事件相关*/
 	unsigned int events;		/* supported events */
 	unsigned int async_events;	/* async events, subset of all */
 
@@ -189,9 +191,11 @@ struct gendisk {
 	 * non-critical accesses use RCU.  Always access through
 	 * helpers.
 	 */
+	/*分区相关*/ 
 	struct disk_part_tbl __rcu *part_tbl;
 	struct hd_struct part0;
 
+	/*用户请求相关*/
 	const struct block_device_operations *fops;
 	struct request_queue *queue;
 	void *private_data;

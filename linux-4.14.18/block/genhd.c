@@ -259,10 +259,12 @@ struct hd_struct *disk_map_sector_rcu(struct gendisk *disk, sector_t sector)
 
 	ptbl = rcu_dereference(disk->part_tbl);
 
+	/*a1.检查是否上次查找的分区*/
 	part = rcu_dereference(ptbl->last_lookup);
 	if (part && sector_in_part(part, sector))
 		return part;
 
+	/*a2.查找sector所属分区*/
 	for (i = 1; i < ptbl->len; i++) {
 		part = rcu_dereference(ptbl->part[i]);
 
@@ -271,6 +273,7 @@ struct hd_struct *disk_map_sector_rcu(struct gendisk *disk, sector_t sector)
 			return part;
 		}
 	}
+	/*a3.不是1-len-1分区,则返回0分区*/
 	return &disk->part0;
 }
 EXPORT_SYMBOL_GPL(disk_map_sector_rcu);
@@ -641,8 +644,10 @@ void device_add_disk(struct device *parent, struct gendisk *disk)
 	WARN_ON(disk->minors && !(disk->major || disk->first_minor));
 	WARN_ON(!disk->minors && !(disk->flags & GENHD_FL_EXT_DEVT));
 
+	/*a1.disk 可用*/
 	disk->flags |= GENHD_FL_UP;
 
+	/*a2.设备号获取*/
 	retval = blk_alloc_devt(&disk->part0, &devt);
 	if (retval) {
 		WARN_ON(1);
@@ -656,9 +661,11 @@ void device_add_disk(struct device *parent, struct gendisk *disk)
 	disk->major = MAJOR(devt);
 	disk->first_minor = MINOR(devt);
 
+	/*a3.disk events init*/
 	disk_alloc_events(disk);
 
 	/* Register BDI before referencing it from bdev */
+	/*a4.bdi register disk register queue regist*/
 	bdi = disk->queue->backing_dev_info;
 	bdi_register_owner(bdi, disk_to_dev(disk));
 
@@ -1189,7 +1196,8 @@ int disk_expand_part_tbl(struct gendisk *disk, int partno)
 
 	if (target <= len)
 		return 0;
-
+	
+	/*a1.分配disk_part_tbl (target 个分区<hd_struct>)*/
 	size = sizeof(*new_ptbl) + target * sizeof(new_ptbl->part[0]);
 	new_ptbl = kzalloc_node(size, GFP_KERNEL, disk->node_id);
 	if (!new_ptbl)
@@ -1197,9 +1205,11 @@ int disk_expand_part_tbl(struct gendisk *disk, int partno)
 
 	new_ptbl->len = target;
 
+	/*a2.迁移old_ptbl的数据到new_ptbl*/
 	for (i = 0; i < len; i++)
 		rcu_assign_pointer(new_ptbl->part[i], old_ptbl->part[i]);
 
+	/*a3.new_ptbl取代old_ptbl*/
 	disk_replace_part_tbl(disk, new_ptbl);
 	return 0;
 }
@@ -1371,8 +1381,13 @@ struct gendisk *alloc_disk_node(int minors, int node_id)
 			DISK_MAX_PARTS);
 		minors = DISK_MAX_PARTS;
 	}
-
+	/*a1.分配gendisk*/
 	disk = kzalloc_node(sizeof(struct gendisk), GFP_KERNEL, node_id);
+	/*
+	a2.初始化gendisk
+	1)分区实始化
+	2.块设备实始化
+	*/
 	if (disk) {
 		if (!init_part_stats(&disk->part0)) {
 			kfree(disk);
