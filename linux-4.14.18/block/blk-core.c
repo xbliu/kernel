@@ -1809,6 +1809,9 @@ out:
 	return ret;
 }
 
+/*
+初始化request的__sector(起始扇区) ioprio(IO优先级) datalen(数据长度) rq_disk(磁盘)
+*/
 void blk_init_request_from_bio(struct request *req, struct bio *bio)
 {
 	struct io_context *ioc = rq_ioc(bio);
@@ -2644,12 +2647,14 @@ struct request *blk_peek_request(struct request_queue *q)
 	lockdep_assert_held(q->queue_lock);
 	WARN_ON_ONCE(q->mq_ops);
 
+    //从elv中取request进行处理
 	while ((rq = __elv_next_request(q)) != NULL) {
 
 		rq = blk_pm_peek_request(q, rq);
 		if (!rq)
 			break;
 
+        /*a1.设置request为RQF_STARTED*/
 		if (!(rq->rq_flags & RQF_STARTED)) {
 			/*
 			 * This is the first time the device driver
@@ -2668,6 +2673,7 @@ struct request *blk_peek_request(struct request_queue *q)
 			trace_block_rq_issue(q, rq);
 		}
 
+        /*a2.queuev中的boundary_rq处理*/
 		if (!q->boundary_rq || q->boundary_rq == rq) {
 			q->end_sector = rq_end_sector(rq);
 			q->boundary_rq = NULL;
@@ -2689,6 +2695,7 @@ struct request *blk_peek_request(struct request_queue *q)
 		if (!q->prep_rq_fn)
 			break;
 
+        /*a3.prep_rq_fn处理*/
 		ret = q->prep_rq_fn(q, rq);
 		if (ret == BLKPREP_OK) {
 			break;
@@ -2762,6 +2769,7 @@ void blk_start_request(struct request *req)
 	lockdep_assert_held(req->q->queue_lock);
 	WARN_ON_ONCE(req->q->mq_ops);
 
+    /*a1.从queue中移除request*/
 	blk_dequeue_request(req);
 
 	if (test_bit(QUEUE_FLAG_STATS, &req->q->queue_flags)) {
@@ -2771,6 +2779,7 @@ void blk_start_request(struct request *req)
 	}
 
 	BUG_ON(test_bit(REQ_ATOM_COMPLETE, &req->atomic_flags));
+    /*a2.request增加定时器*/
 	blk_add_timer(req);
 }
 EXPORT_SYMBOL(blk_start_request);
@@ -2839,20 +2848,21 @@ bool blk_update_request(struct request *req, blk_status_t error,
 
 	blk_account_io_completion(req, nr_bytes);
 
+    /*a1.更新bio的已完成bytes*/
 	total_bytes = 0;
 	while (req->bio) {
 		struct bio *bio = req->bio;
 		unsigned bio_bytes = min(bio->bi_iter.bi_size, nr_bytes);
 
-		if (bio_bytes == bio->bi_iter.bi_size)
+		if (bio_bytes == bio->bi_iter.bi_size) //此bio已处理完
 			req->bio = bio->bi_next;
 
 		/* Completion has already been traced */
 		bio_clear_flag(bio, BIO_TRACE_COMPLETION);
-		req_bio_endio(req, bio, bio_bytes, error);
+		req_bio_endio(req, bio, bio_bytes, error); //更新bio完成的bytes
 
 		total_bytes += bio_bytes;
-		nr_bytes -= bio_bytes;
+		nr_bytes -= bio_bytes; //计算未更新的剩余bytes
 
 		if (!nr_bytes)
 			break;
@@ -2861,6 +2871,7 @@ bool blk_update_request(struct request *req, blk_status_t error,
 	/*
 	 * completely done
 	 */
+    /*a2.req已处理完成*/
 	if (!req->bio) {
 		/*
 		 * Reset counters so that the request stacking driver
@@ -2871,9 +2882,11 @@ bool blk_update_request(struct request *req, blk_status_t error,
 		return false;
 	}
 
+    /*a3.更新request请求的data len*/
 	req->__data_len -= total_bytes;
 
 	/* update sector only for requests with clear definition of sector */
+    /*a4.更新request的起始扇区*/
 	if (!blk_rq_is_passthrough(req))
 		req->__sector += total_bytes >> 9;
 
@@ -2883,6 +2896,7 @@ bool blk_update_request(struct request *req, blk_status_t error,
 		req->cmd_flags |= req->bio->bi_opf & REQ_FAILFAST_MASK;
 	}
 
+    /*a5.重新计算request的segments*/
 	if (!(req->rq_flags & RQF_SPECIAL_PAYLOAD)) {
 		/*
 		 * If total number of sectors is less than the first segment
@@ -2946,6 +2960,7 @@ void blk_finish_request(struct request *req, blk_status_t error)
 	lockdep_assert_held(req->q->queue_lock);
 	WARN_ON_ONCE(q->mq_ops);
 
+    /*a1.一些状态处理*/
 	if (req->rq_flags & RQF_STATS)
 		blk_stat_add(req);
 
@@ -2957,6 +2972,7 @@ void blk_finish_request(struct request *req, blk_status_t error)
 	if (unlikely(laptop_mode) && !blk_rq_is_passthrough(req))
 		laptop_io_completion(req->q->backing_dev_info);
 
+    /*a2.删除timer*/
 	blk_delete_timer(req);
 
 	if (req->rq_flags & RQF_DONTPREP)
@@ -2964,6 +2980,7 @@ void blk_finish_request(struct request *req, blk_status_t error)
 
 	blk_account_io_done(req);
 
+    /*a3.收尾工作*/
 	if (req->end_io) {
 		wbt_done(req->q->rq_wb, &req->issue_stat);
 		req->end_io(req, error);
@@ -3757,3 +3774,19 @@ io_cq---|
 
 */
 
+/*
+1.request的流向 
+request->plug_list->elvator queue->request_queue->driver handle 
+2.几类api 
+1)获取request: __get_request
+2)向块设备发出IO requests:generic_make_request,blk_queue_bio
+3)合并: blk_attempt_plug_merge
+4)flush plug_list request :blk_flush_plug_list
+5)处理request queue中的request 
+a.启动线程处理request 如blk_start_queue
+b.request处理 
+i:从request queue中取出并交给driver处理:blk_fetch_request 
+{分为两步: 从request queue中取 与 交给driver处理 } 
+ii:driver通知处理request完成:blk_end_request 
+{分为两步: update request(更新数据进度)与finish request(通知request完成)}
+*/
