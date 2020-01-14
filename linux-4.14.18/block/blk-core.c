@@ -1440,9 +1440,11 @@ static struct request *blk_old_get_request(struct request_queue *q,
 	WARN_ON_ONCE(q->mq_ops);
 
 	/* create ioc upfront */
+    /*a1.创建当前进程的io_context*/
 	create_io_context(gfp_mask, q->node);
 
 	spin_lock_irq(q->queue_lock);
+    /*a2.获取request*/
 	rq = get_request(q, op, NULL, gfp_mask);
 	if (IS_ERR(rq)) {
 		spin_unlock_irq(q->queue_lock);
@@ -1450,6 +1452,7 @@ static struct request *blk_old_get_request(struct request_queue *q,
 	}
 
 	/* q->queue_lock is unlocked at this point */
+    /*a3.初始化request的基础成员*/
 	rq->__data_len = 0;
 	rq->__sector = (sector_t) -1;
 	rq->bio = rq->biotail = NULL;
@@ -3778,7 +3781,7 @@ io_cq---|
 1.request的流向 
 request->plug_list->elvator queue->request_queue->driver handle 
 2.几类api 
-1)获取request: __get_request
+1)获取request: blk_get_request
 2)向块设备发出IO requests:generic_make_request,blk_queue_bio
 3)合并: blk_attempt_plug_merge
 4)flush plug_list request :blk_flush_plug_list
