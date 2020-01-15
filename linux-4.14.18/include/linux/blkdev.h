@@ -132,14 +132,17 @@ typedef __u32 __bitwise req_flags_t;
  * If you modify this structure, make sure to update blk_rq_init() and
  * especially blk_mq_rq_ctx_init() to take care of the added fields.
  */
+ /*
+ request成员分为三类:driver,block layer,io sched
+*/
 struct request {
-	struct list_head queuelist;
+	struct list_head queuelist; //在内部queue上的组织
 	union {
 		struct __call_single_data csd;
 		u64 fifo_time;
 	};
 
-	struct request_queue *q;
+	struct request_queue *q; //所属request queue
 	struct blk_mq_ctx *mq_ctx;
 
 	int cpu;
@@ -151,12 +154,12 @@ struct request {
 	unsigned long atomic_flags;
 
 	/* the following two fields are internal, NEVER access directly */
-	unsigned int __data_len;	/* total data len */
+	unsigned int __data_len;	/* total data len  请求的数据长度*/
 	int tag;
-	sector_t __sector;		/* sector cursor */
+	sector_t __sector;		/* sector cursor 起始扇区*/
 
-	struct bio *bio;
-	struct bio *biotail;
+	struct bio *bio; //request上的第一个bio
+	struct bio *biotail; //request上的最后一个bio
 
 	/*
 	 * The hash is used inside the scheduler, and killed once the
@@ -201,9 +204,9 @@ struct request {
 		} flush;
 	};
 
-	struct gendisk *rq_disk;
-	struct hd_struct *part;
-	unsigned long start_time;
+	struct gendisk *rq_disk; //所属disk
+	struct hd_struct *part; //所属磁盘分区
+	unsigned long start_time; //请求的开始时间(也是分配的时间)
 	struct blk_issue_stat issue_stat;
 #ifdef CONFIG_BLK_CGROUP
 	struct request_list *rl;		/* rl this rq is alloced from */
@@ -220,7 +223,7 @@ struct request {
 
 	unsigned short ioprio;
 
-	unsigned int timeout;
+	unsigned int timeout; //请求超时时间
 
 	void *special;		/* opaque pointer available for LLD use */
 
@@ -234,11 +237,11 @@ struct request {
 	/*
 	 * completion callback.
 	 */
-	rq_end_io_fn *end_io;
+	rq_end_io_fn *end_io; //完成IO request时的回调
 	void *end_io_data;
 
 	/* for bidi */
-	struct request *next_rq;
+	struct request *next_rq; //数据双向(data out-in)request
 };
 
 static inline bool blk_op_is_scsi(unsigned int op)

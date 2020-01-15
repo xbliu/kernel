@@ -1199,6 +1199,11 @@ int blk_update_nr_requests(struct request_queue *q, unsigned int nr)
  * Returns ERR_PTR on failure, with @q->queue_lock held.
  * Returns request pointer on success, with @q->queue_lock *not held*.
  */
+ /*
+ 拥塞控制控制的是同类操作req的数量
+ 操作分为两大类:同步与异步
+同步操作: REQ_OP_READ (REQ_SYNC | REQ_FUA | REQ_PREFLUSH)其它均为异步操作
+*/
 static struct request *__get_request(struct request_list *rl, unsigned int op,
 		struct bio *bio, gfp_t gfp_mask)
 {
@@ -1215,11 +1220,22 @@ static struct request *__get_request(struct request_list *rl, unsigned int op,
 
 	if (unlikely(blk_queue_dying(q)))
 		return ERR_PTR(-ENODEV);
-	/*may_queue 用来做什么?????*/
+	/*
+	a1.决策elv是否必须分配此request
+	ELV_MQUEUE_MAY:可分也可不分
+	ELV_MQUEUE_NO:不可分配
+	ELV_MQUEUE_MUST:必须分配
+	*/
 	may_queue = elv_may_queue(q, op);
 	if (may_queue == ELV_MQUEUE_NO)
 		goto rq_starved;
 
+	/*
+	a2.计算request_list中已分配的request是否达到阀值
+	1)超过queue拥塞控制数目,则回写设为拥塞状态
+	2)超过queue最大reqeust数目,则设request_list状态为满状态,且标志该进程为批量分配进程,
+	其它的非ELV_MQUEUE_MUST进程不予分配request.
+	*/
 	if (rl->count[is_sync]+1 >= queue_congestion_on_threshold(q)) {
 		if (rl->count[is_sync]+1 >= q->nr_requests) {
 			/*
@@ -1251,9 +1267,11 @@ static struct request *__get_request(struct request_list *rl, unsigned int op,
 	 * limit of requests, otherwise we could have thousands of requests
 	 * allocated with any setting of ->nr_requests
 	 */
+	/*a2.当request_list超过queue req阀值的50%时不再分配*/ 
 	if (rl->count[is_sync] >= (3 * q->nr_requests / 2))
 		return ERR_PTR(-ENOMEM);
 
+	/*a3.记录已分配的req,与同类request数目*/
 	q->nr_rqs[is_sync]++;
 	rl->count[is_sync]++;
 	rl->starved[is_sync] = 0;
@@ -1271,6 +1289,9 @@ static struct request *__get_request(struct request_list *rl, unsigned int op,
 	 * Also, lookup icq while holding queue_lock.  If it doesn't exist,
 	 * it will be created after releasing queue_lock.
 	 */
+	/*
+	a4.决策rq是否由elv管理(flush操作与bypass模式不由elv管理,其它情况皆由elv管理)
+	*/
 	if (!op_is_flush(op) && !blk_queue_bypass(q)) {
 		rq_flags |= RQF_ELVPRIV;
 		q->nr_rqs_elvpriv++;
@@ -1288,16 +1309,19 @@ static struct request *__get_request(struct request_list *rl, unsigned int op,
 	rq->rl = rl <request_list>
 	*/
 	/* allocate and init request */
+	/*a5.从mempool(rl-rq_pool)中分配request*/
 	rq = mempool_alloc(rl->rq_pool, gfp_mask);
 	if (!rq)
 		goto fail_alloc;
 
+	/*a6.初始化rq基本元素*/
 	blk_rq_init(q, rq);
 	blk_rq_set_rl(rq, rl);
 	rq->cmd_flags = op;
 	rq->rq_flags = rq_flags;
 
 	/* init elvpriv */
+	/*a7.elv相关初始化*/
 	if (rq_flags & RQF_ELVPRIV) {
 		if (unlikely(et->icq_cache && !icq)) {
 			if (ioc)
