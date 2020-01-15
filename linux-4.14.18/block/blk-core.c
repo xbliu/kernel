@@ -3817,3 +3817,19 @@ i:从request queue中取出并交给driver处理:blk_fetch_request
 ii:driver通知处理request完成:blk_end_request 
 {分为两步: update request(更新数据进度)与finish request(通知request完成)}
 */
+
+/*
+一、泄流
+1.主动蓄流,泄流  blk_start_plug blk_finish_plug 如direct io,writeback,madvise
+2.被动泄流:在蓄流的过程中
+a.当plug上的request count>=BLK_MAX_REQUEST_COUNT
+b.当plug最后一个request请求的大小>=BLK_PLUG_FLUSH_SIZE
+二、elv request add与dispatch
+1.add情况: unplug时 plug->elv
+2.dispatch情况:
+1)bypass模式启动时:blk_queue_bypass_start
+2)cleanup request_queue时:blk_cleanup_queue
+3)__elv_add_request ELEVATOR_INSERT_BACK插入
+	a.flush操作: __elv_add_request line 679 (???)
+	b.blk_insert_cloned_request中
+*/
