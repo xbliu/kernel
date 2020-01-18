@@ -545,15 +545,15 @@ struct request_queue {
 	 */
 	unsigned int		request_fn_active;
 
-	unsigned int		rq_timeout;
+	unsigned int		rq_timeout; //request 默认的超时时间
 	int			poll_nsec;
 
 	struct blk_stat_callback	*poll_cb;
 	struct blk_rq_stat	poll_stat[BLK_MQ_POLL_STATS_BKTS];
 
-	struct timer_list	timeout;
-	struct work_struct	timeout_work;
-	struct list_head	timeout_list;
+	struct timer_list	timeout; //下一个将要到期的timer
+	struct work_struct	timeout_work; //处理timer的任务
+	struct list_head	timeout_list; //timer 列表(启动的req timer挂入此队列)
 
 	struct list_head	icq_list;
 #ifdef CONFIG_BLK_CGROUP
