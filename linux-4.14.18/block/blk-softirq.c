@@ -179,3 +179,12 @@ static __init int blk_softirq_init(void)
 	return 0;
 }
 subsys_initcall(blk_softirq_init);
+
+/*
+中断分为上半部与下半部,下半部用于耗时的处理.
+blk-softirq 处理流程:
+driver完成上半部后call blk_complete_request,将req加入到blk_cpu_done.
+若blk_cpu_done 列表中只有一个req,则启动BLOCK_SOFTIRQ处理,
+否则说明softirq已启动处理.
+*/
+
