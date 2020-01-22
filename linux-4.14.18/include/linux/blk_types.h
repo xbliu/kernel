@@ -353,12 +353,12 @@ static inline bool blk_qc_t_is_internal(blk_qc_t cookie)
 }
 
 struct blk_rq_stat {
-	s64 mean;
-	u64 min;
-	u64 max;
-	s32 nr_samples;
-	s32 nr_batch;
-	u64 batch;
+	s64 mean; /*平均值*/
+	u64 min; /*计量单位最小值*/
+	u64 max; /*计量单位最大值*/
+	s32 nr_samples; /*总采样次数*/
+	s32 nr_batch; /*批量统计的采样次数*/
+	u64 batch; /*批量统计的总量*/
 };
 
 #endif /* __LINUX_BLK_TYPES_H */
