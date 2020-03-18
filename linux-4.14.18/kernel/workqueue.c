@@ -3955,10 +3955,11 @@ static int alloc_and_link_pwqs(struct workqueue_struct *wq)
 				per_cpu_ptr(wq->cpu_pwqs, cpu);
 			struct worker_pool *cpu_pools =
 				per_cpu(cpu_worker_pools, cpu);
-
+            /*pool_workqueue 关联workqueue_struct与worker_pool*/
 			init_pwq(pwq, wq, &cpu_pools[highpri]);
 
 			mutex_lock(&wq->mutex);
+            /*pwq加入到wq->pwqs列表*/
 			link_pwq(pwq);
 			mutex_unlock(&wq->mutex);
 		}
@@ -4016,6 +4017,7 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	if (flags & WQ_UNBOUND)
 		tbl_size = nr_node_ids * sizeof(wq->numa_pwq_tbl[0]);
 
+    /*a1.分配workqueue_struct*/
 	wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
 	if (!wq)
 		return NULL;
@@ -4034,6 +4036,7 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	max_active = wq_clamp_max_active(max_active, flags, wq->name);
 
 	/* init wq */
+    /*a2.初始化workqueue_struct*/
 	wq->flags = flags;
 	wq->saved_max_active = max_active;
 	mutex_init(&wq->mutex);
@@ -4053,6 +4056,7 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	 * Workqueues which may be used during memory reclaim should
 	 * have a rescuer to guarantee forward progress.
 	 */
+    /*a3.为第一个Workqueue创建一个reclaim worker,确保内存回收时能够继续工作*/
 	if (flags & WQ_MEM_RECLAIM) {
 		struct worker *rescuer;
 
@@ -4084,10 +4088,12 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	mutex_lock(&wq_pool_mutex);
 
 	mutex_lock(&wq->mutex);
+    /*a4.为每一个pool_wq调整max_active*/
 	for_each_pwq(pwq, wq)
 		pwq_adjust_max_active(pwq);
 	mutex_unlock(&wq->mutex);
 
+    /*a5.加入workqueues列表*/
 	list_add_tail_rcu(&wq->list, &workqueues);
 
 	mutex_unlock(&wq_pool_mutex);
@@ -5608,6 +5614,11 @@ static void __init wq_numa_init(void)
  * items.  Actual work item execution starts only after kthreads can be
  * created and scheduled right before early initcalls.
  */
+/*
+worker_pool分两类：bind cpu与unbound,每一类又有两个不同优先级的worker_pool.
+bind: worker_pool(0)  worker_pool(HIGHPRI_NICE_LEVEL)
+unbound: worker_pool(0)  worker_pool(HIGHPRI_NICE_LEVEL)
+*/
 int __init workqueue_init_early(void)
 {
 	int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL };
@@ -5621,6 +5632,7 @@ int __init workqueue_init_early(void)
 	pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
 
 	/* initialize CPU pools */
+    /*a1.初始化bind worker_pool*/
 	for_each_possible_cpu(cpu) {
 		struct worker_pool *pool;
 
@@ -5628,7 +5640,9 @@ int __init workqueue_init_early(void)
 		for_each_cpu_worker_pool(pool, cpu) {
 			BUG_ON(init_worker_pool(pool));
 			pool->cpu = cpu;
+            /*设置允许运行的cpu*/
 			cpumask_copy(pool->attrs->cpumask, cpumask_of(cpu));
+            /*设置pool的优先级(即worker线程的运行优先级)*/
 			pool->attrs->nice = std_nice[i++];
 			pool->node = cpu_to_node(cpu);
 
@@ -5640,6 +5654,7 @@ int __init workqueue_init_early(void)
 	}
 
 	/* create default unbound and ordered wq attrs */
+    /*创建unbound wq 属性*/
 	for (i = 0; i < NR_STD_WORKER_POOLS; i++) {
 		struct workqueue_attrs *attrs;
 
@@ -5658,6 +5673,7 @@ int __init workqueue_init_early(void)
 		ordered_wq_attrs[i] = attrs;
 	}
 
+    /*a3.创建系统 workqueue*/
 	system_wq = alloc_workqueue("events", 0, 0);
 	system_highpri_wq = alloc_workqueue("events_highpri", WQ_HIGHPRI, 0);
 	system_long_wq = alloc_workqueue("events_long", 0, 0);
@@ -5714,6 +5730,10 @@ int __init workqueue_init(void)
 		}
 	}
 
+    /* 
+      update NUMA affinity of a wq for CPU hot[un]plug
+     workqueue_init_early已创建多个系统workqueue,故workqueues不为空
+    */
 	list_for_each_entry(wq, &workqueues, list)
 		wq_update_unbound_numa(wq, smp_processor_id(), true);
 
