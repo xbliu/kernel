@@ -646,14 +646,18 @@ int vb2_queue_init(struct vb2_queue *q)
 		|| WARN_ON(VB2_MEMORY_DMABUF != (int)V4L2_MEMORY_DMABUF))
 		return -EINVAL;
 
+    /* 
+      自定义的结构必须包含vb2_v4l2_buffer,且放在第一位
+      驱动层buffer的实体是vb2_v4l2_buffer,而不是vb2_buffer.
+    */
 	if (q->buf_struct_size == 0)
 		q->buf_struct_size = sizeof(struct vb2_v4l2_buffer);
 
-	q->buf_ops = &v4l2_buf_ops;
-	q->is_multiplanar = V4L2_TYPE_IS_MULTIPLANAR(q->type);
+	q->buf_ops = &v4l2_buf_ops; //填充buffer的一些必要信息(从应用层->驱动层/驱动层->应用层)
+	q->is_multiplanar = V4L2_TYPE_IS_MULTIPLANAR(q->type); //yuv有packed与planner两个格式.
 	q->is_output = V4L2_TYPE_IS_OUTPUT(q->type);
 	q->copy_timestamp = (q->timestamp_flags & V4L2_BUF_FLAG_TIMESTAMP_MASK)
-			== V4L2_BUF_FLAG_TIMESTAMP_COPY;
+			== V4L2_BUF_FLAG_TIMESTAMP_COPY; //是否应该设置时间截
 	/*
 	 * For compatibility with vb1: if QBUF hasn't been called yet, then
 	 * return POLLERR as well. This only affects capture queues, output

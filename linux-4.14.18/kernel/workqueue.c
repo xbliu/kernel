@@ -1309,6 +1309,9 @@ static void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
 	 */
 	smp_mb();
 
+    /*线程池中正在运行状态的worker数目等于0的时候,
+      说明需要wakeup线程池中处于idle状态的的worker线程来处理work.
+    */
 	if (__need_more_worker(pool))
 		wake_up_worker(pool);
 }
@@ -1339,6 +1342,7 @@ static int wq_select_unbound_cpu(int cpu)
 	static bool printed_dbg_warning;
 	int new_cpu;
 
+    /*a1.若该cpu支持wq_unbound_cpumask,则选它*/
 	if (likely(!wq_debug_force_rr_cpu)) {
 		if (cpumask_test_cpu(cpu, wq_unbound_cpumask))
 			return cpu;
@@ -1350,6 +1354,7 @@ static int wq_select_unbound_cpu(int cpu)
 	if (cpumask_empty(wq_unbound_cpumask))
 		return cpu;
 
+    /*a2.若该cpu不支持wq_unbound_cpumask,则从online的cpu中选择第一个支持wq_unbound_cpumask的cpu*/
 	new_cpu = __this_cpu_read(wq_rr_cpu_last);
 	new_cpu = cpumask_next_and(new_cpu, wq_unbound_cpumask, cpu_online_mask);
 	if (unlikely(new_cpu >= nr_cpu_ids)) {
@@ -1382,14 +1387,28 @@ static void __queue_work(int cpu, struct workqueue_struct *wq,
 	debug_work_activate(work);
 
 	/* if draining, only works from the same workqueue are allowed */
+    /* 
+     a1. __WQ_DRAINING表示该workqueue正在进行draining的操作,
+      (多半发生在销毁workqueue的时候,既然要销毁,那么该workqueue已拥有的所有work需处理完毕,才允许它消亡)
+     因此新的work不允许挂入,但是当正在清空的work(隶属于该workqueue)又触发了一个queue work的操作(也就是所谓chained work),
+     这时候该work允许挂入.
+    */
 	if (unlikely(wq->flags & __WQ_DRAINING) &&
 	    WARN_ON_ONCE(!is_chained_work(wq)))
 		return;
 retry:
+    /*
+    a2.WORK_CPU_UNBOUND表示未指定cpu,则优先选择当前运行的cpu.
+    */
 	if (req_cpu == WORK_CPU_UNBOUND)
 		cpu = wq_select_unbound_cpu(raw_smp_processor_id());
 
 	/* pwq which will be used unless @work is executing elsewhere */
+    /* 
+      a3.确定了cpu,
+      非unbound的workqueue:使用per cpu的pool workqueue
+      unbound的workqueue:根据numa node id来选择pool_workqueue,cpu_to_node可根椐cpu id获取node id
+    */
 	if (!(wq->flags & WQ_UNBOUND))
 		pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
 	else
@@ -1400,6 +1419,11 @@ retry:
 	 * running there, in which case the work needs to be queued on that
 	 * pool to guarantee non-reentrancy.
 	 */
+    /*
+    a4.work可能正在运行,为了确保work的callback function不会重入,该work最好是挂入此pool workqueue. 
+    last_pool与选择的pwq->pool不一致,根据last pool找到对应的pool workqueue, 
+    再找到具体哪一个worker线程正在处理该work,若能找到此woker,使用它,否则还是pwq->pool 
+    */ 
 	last_pool = get_work_pool(work);
 	if (last_pool && last_pool != pwq->pool) {
 		struct worker *worker;
@@ -1449,6 +1473,11 @@ retry:
 	pwq->nr_in_flight[pwq->work_color]++;
 	work_flags = work_color_to_flags(pwq->work_color);
 
+    /* 
+      a5.pool workqueue有两个队列
+      等待处理的队列(pwq->pool->worklist):意味着work进入active状态,线程池会立即处理
+      延迟处理的队列(pwq->delayed_works):当active works超过最大数目时放入延迟队列中
+    */
 	if (likely(pwq->nr_active < pwq->max_active)) {
 		trace_workqueue_activate_work(work);
 		pwq->nr_active++;
@@ -1460,6 +1489,7 @@ retry:
 		worklist = &pwq->delayed_works;
 	}
 
+    /*a6.插入到队列中*/
 	insert_work(pwq, work, worklist, work_flags);
 
 	spin_unlock(&pwq->pool->lock);
@@ -1484,6 +1514,7 @@ bool queue_work_on(int cpu, struct workqueue_struct *wq,
 
 	local_irq_save(flags);
 
+    /*pending状态的work只会挂入一次;WORK_STRUCT_PENDING_BIT表示work已挂入到worker队列中*/
 	if (!test_and_set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(work))) {
 		__queue_work(cpu, wq, work);
 		ret = true;
@@ -5673,6 +5704,10 @@ int __init workqueue_init(void)
 
 	mutex_lock(&wq_pool_mutex);
 
+    /* 
+      每个cpu 静态定义NR_STD_WORKER_POOLS个worker_pool (bind worker_pool)
+      numa 记录cpu访问内存最快的结点
+    */
 	for_each_possible_cpu(cpu) {
 		for_each_cpu_worker_pool(pool, cpu) {
 			pool->node = cpu_to_node(cpu);
@@ -5685,6 +5720,7 @@ int __init workqueue_init(void)
 	mutex_unlock(&wq_pool_mutex);
 
 	/* create the initial workers */
+    /*为每一个bind worker_pool创建worker*/
 	for_each_online_cpu(cpu) {
 		for_each_cpu_worker_pool(pool, cpu) {
 			pool->flags &= ~POOL_DISASSOCIATED;
@@ -5692,6 +5728,7 @@ int __init workqueue_init(void)
 		}
 	}
 
+    /*为每一个unbind worker_pool创建worker*/
 	hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
 		BUG_ON(!create_worker(pool));
 
@@ -5700,3 +5737,12 @@ int __init workqueue_init(void)
 
 	return 0;
 }
+
+
+/*
+workqueue与worker分离,worker由worker_pool负责创建.workpool又分为bind与unbind. 
+Q:worker_pool何时创建? 如何创建worker?由什么因素决定worker的数量? 
+Q:worker如何处理work? 
+Q:workqueue如何与workpool关联? 
+Q:workqueue的work如何分发到work_pool? 
+*/

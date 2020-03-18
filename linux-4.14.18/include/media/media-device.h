@@ -40,6 +40,9 @@ struct device;
  * links between existing entities and should not create entities and register
  * them.
  */
+/*
+当有entity注册到media device中时调用此函数,用于通知已存在的entity创建link.
+*/
 struct media_entity_notify {
 	struct list_head list;
 	void *notify_data;
@@ -51,6 +54,9 @@ struct media_entity_notify {
  * @link_notify: Link state change notification callback. This callback is
  *		 called with the graph_mutex held.
  */
+/*
+当link状态发生改变时通知回调
+*/
 struct media_device_ops {
 	int (*link_notify)(struct media_link *link, u32 flags,
 			   unsigned int notification);
@@ -137,9 +143,10 @@ struct media_device {
 	u64 topology_version;
 
 	u32 id;
-	struct ida entity_internal_idx;
+	struct ida entity_internal_idx; //entity id管理???
 	int entity_internal_idx_max;
 
+    /*media device所有entity interface pad link管理*/
 	struct list_head entities;
 	struct list_head interfaces;
 	struct list_head pads;
@@ -153,6 +160,7 @@ struct media_device {
 	struct media_graph pm_count_walk;
 
 	void *source_priv;
+    /*entity 操作*/
 	int (*enable_source)(struct media_entity *entity,
 			     struct media_pipeline *pipe);
 	void (*disable_source)(struct media_entity *entity);
