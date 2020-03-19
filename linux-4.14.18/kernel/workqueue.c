@@ -1650,12 +1650,17 @@ static void worker_enter_idle(struct worker *worker)
 {
 	struct worker_pool *pool = worker->pool;
 
+    /*
+    a1.若worker已标志WORKER_IDLE或者加入了pool->idle_list或pool->busy_hash列表 
+    说明有其它进程也将使用此worker. 
+    */
 	if (WARN_ON_ONCE(worker->flags & WORKER_IDLE) ||
 	    WARN_ON_ONCE(!list_empty(&worker->entry) &&
 			 (worker->hentry.next || worker->hentry.pprev)))
 		return;
 
 	/* can't use worker_set_flags(), also called from create_worker() */
+    /*a2.更新worker的状态,并加入到pool->idle_list*/
 	worker->flags |= WORKER_IDLE;
 	pool->nr_idle++;
 	worker->last_active = jiffies;
@@ -1663,6 +1668,13 @@ static void worker_enter_idle(struct worker *worker)
 	/* idle_list is LIFO */
 	list_add(&worker->entry, &pool->idle_list);
 
+    /*
+    a3.pool拥有worker数量太多,需要在一定时间内销毁,避免占用太多资源 
+    (过多的判断标准为idle的worker-2还超过busy的1/4) 
+    Q:为什么要减2? 
+    A:必须预留一个为manager worker,而manager worker算作idle worker. 
+    再怎么的也要预留一个idle worker可以随时启用吧. 
+    */
 	if (too_many_workers(pool) && !timer_pending(&pool->idle_timer))
 		mod_timer(&pool->idle_timer, jiffies + IDLE_WORKER_TIMEOUT);
 
@@ -1791,6 +1803,10 @@ static struct worker *create_worker(struct worker_pool *pool)
 	char id_buf[16];
 
 	/* ID is needed to determine kthread name */
+    /* 
+      a1.分配worker
+      worker分配在pool关联的内存节点上,numa模型的话比其它有更快的访问速度.
+    */
 	id = ida_simple_get(&pool->worker_ida, 0, 0, GFP_KERNEL);
 	if (id < 0)
 		goto fail;
@@ -1808,6 +1824,9 @@ static struct worker *create_worker(struct worker_pool *pool)
 	else
 		snprintf(id_buf, sizeof(id_buf), "u%d:%d", pool->id, id);
 
+    /*
+    a2.创建task,设置运行优先级及cpu bind属性(可以在哪些CPU上运行)
+    */
 	worker->task = kthread_create_on_node(worker_thread, worker, pool->node,
 					      "kworker/%s", id_buf);
 	if (IS_ERR(worker->task))
@@ -1817,9 +1836,14 @@ static struct worker *create_worker(struct worker_pool *pool)
 	kthread_bind_mask(worker->task, pool->attrs->cpumask);
 
 	/* successful, attach the worker to the pool */
+    /*
+    a3.attach到pool,跟cpu-[un]hotplugs保持一致. 
+    因为有些worker_pool是绑定cpu的,cpu一旦offline,worker_pool应该是失效的.
+    */
 	worker_attach_to_pool(worker, pool);
 
 	/* start the newly created worker */
+    /*a4.进入idle状态,开始处理事务*/
 	spin_lock_irq(&pool->lock);
 	worker->pool->nr_workers++;
 	worker_enter_idle(worker);
@@ -2041,12 +2065,18 @@ static bool manage_workers(struct worker *worker)
  * CONTEXT:
  * spin_lock_irq(pool->lock) which is released and regrabbed.
  */
+/*
+1)同一work多次加入worker_pool,由同一worker处理还是由不同woker处理?
+2)为什么要标记WORKER_CPU_INTENSIVE？WORKER_CPU_INTENSIVE表示什么?
+
+*/
 static void process_one_work(struct worker *worker, struct work_struct *work)
 __releases(&pool->lock)
 __acquires(&pool->lock)
 {
 	struct pool_workqueue *pwq = get_work_pwq(work);
 	struct worker_pool *pool = worker->pool;
+    /*是不是非常消耗CPU算力*/
 	bool cpu_intensive = pwq->wq->flags & WQ_CPU_INTENSIVE;
 	int work_color;
 	struct worker *collision;
@@ -2072,6 +2102,10 @@ __acquires(&pool->lock)
 	 * already processing the work.  If so, defer the work to the
 	 * currently executing one.
 	 */
+    /* 
+      a1.查找此work是否已由其它worker上处理.
+      根椐cache特性,即然已有其它worker处理,当然继续由此worker处理更快.
+    */
 	collision = find_worker_executing_work(pool, work);
 	if (unlikely(collision)) {
 		move_linked_works(work, &collision->scheduled, NULL);
@@ -2080,6 +2114,9 @@ __acquires(&pool->lock)
 
 	/* claim and dequeue */
 	debug_work_deactivate(work);
+    /*
+    a2.加入到pool->busy_hash列表,用作a1判断
+    */
 	hash_add(pool->busy_hash, &worker->hentry, (unsigned long)work);
 	worker->current_work = work;
 	worker->current_func = work->func;
@@ -2142,6 +2179,7 @@ __acquires(&pool->lock)
 	 */
 	lockdep_invariant_state(true);
 	trace_workqueue_execute_start(work);
+    /*a3.work执行*/
 	worker->current_func(work);
 	/*
 	 * While we must be careful to not use "work" after this, the trace
@@ -2171,7 +2209,7 @@ __acquires(&pool->lock)
 	cond_resched_rcu_qs();
 
 	spin_lock_irq(&pool->lock);
-
+    /*a4.从pool->busy_hash列表中移除*/
 	/* clear cpu intensive status */
 	if (unlikely(cpu_intensive))
 		worker_clr_flags(worker, WORKER_CPU_INTENSIVE);
@@ -2229,6 +2267,7 @@ woke_up:
 	spin_lock_irq(&pool->lock);
 
 	/* am I supposed to die? */
+    /*a1.worker标记为WORKER_DIE,立即销毁.*/
 	if (unlikely(worker->flags & WORKER_DIE)) {
 		spin_unlock_irq(&pool->lock);
 		WARN_ON_ONCE(!list_empty(&worker->entry));
@@ -2241,13 +2280,17 @@ woke_up:
 		return 0;
 	}
 
+    /*a2.从pool->idle_list列表中移除,选择pool中的work进行处理*/
 	worker_leave_idle(worker);
 recheck:
 	/* no more worker necessary? */
-	if (!need_more_worker(pool))
+	if (!need_more_worker(pool)) //当前数量的worker能处理好,继续休着吧
 		goto sleep;
 
 	/* do we need to manage? */
+    /*
+    a3.保证至少有一个worker可以随时启用成为manager worker.
+    */
 	if (unlikely(!may_start_working(pool)) && manage_workers(worker))
 		goto recheck;
 
@@ -2267,6 +2310,9 @@ recheck:
 	 */
 	worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
 
+    /*
+    a4.从pool->worklist中取出work进行处理,若有多个work且运行的worker少于1,继续处理.
+    */
 	do {
 		struct work_struct *work =
 			list_first_entry(&pool->worklist,
@@ -2274,6 +2320,10 @@ recheck:
 
 		pool->watchdog_ts = jiffies;
 
+        /* 
+          WORK_STRUCT_LINKED用于flush work,即然是flush,肯定得先调用flush将之前的
+          work处理完???
+        */
 		if (likely(!(*work_data_bits(work) & WORK_STRUCT_LINKED))) {
 			/* optimization path, not strictly necessary */
 			process_one_work(worker, work);
@@ -2285,6 +2335,7 @@ recheck:
 		}
 	} while (keep_working(pool));
 
+    /*a5.处理完事务,等待下一次触发*/
 	worker_set_flags(worker, WORKER_PREP);
 sleep:
 	/*
