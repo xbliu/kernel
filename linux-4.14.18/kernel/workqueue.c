@@ -1342,7 +1342,7 @@ static int wq_select_unbound_cpu(int cpu)
 	static bool printed_dbg_warning;
 	int new_cpu;
 
-    /*a1.若该cpu支持wq_unbound_cpumask,则选它*/
+    /*a1.若wq_unbound_cpumask包含了该cpu,则选它*/
 	if (likely(!wq_debug_force_rr_cpu)) {
 		if (cpumask_test_cpu(cpu, wq_unbound_cpumask))
 			return cpu;
@@ -1354,7 +1354,7 @@ static int wq_select_unbound_cpu(int cpu)
 	if (cpumask_empty(wq_unbound_cpumask))
 		return cpu;
 
-    /*a2.若该cpu不支持wq_unbound_cpumask,则从online的cpu中选择第一个支持wq_unbound_cpumask的cpu*/
+    /*a2.若wq_unbound_cpumask不包含该cpu,则从online的cpu中选择第一个支持wq_unbound_cpumask的cpu*/
 	new_cpu = __this_cpu_read(wq_rr_cpu_last);
 	new_cpu = cpumask_next_and(new_cpu, wq_unbound_cpumask, cpu_online_mask);
 	if (unlikely(new_cpu >= nr_cpu_ids)) {
@@ -3443,11 +3443,16 @@ static struct worker_pool *get_unbound_pool(const struct workqueue_attrs *attrs)
 	u32 hash = wqattrs_hash(attrs);
 	struct worker_pool *pool;
 	int node;
+    /*NUMA_NO_NODE = -1,内核自动地使用当前执行CPU对应的结点nid = numa_mem_id()*/
 	int target_node = NUMA_NO_NODE;
 
 	lockdep_assert_held(&wq_pool_mutex);
 
 	/* do we already have a matching pool? */
+    /* 
+    a1.从unbound_pool_hash查找是否有同类属性的worker_pool, 
+    属性只有两项线程优先级与cpu_mask,无numa对比.
+    */
 	hash_for_each_possible(unbound_pool_hash, pool, hash_node, hash) {
 		if (wqattrs_equal(pool->attrs, attrs)) {
 			pool->refcnt++;
@@ -3456,6 +3461,7 @@ static struct worker_pool *get_unbound_pool(const struct workqueue_attrs *attrs)
 	}
 
 	/* if cpumask is contained inside a NUMA node, we belong to that node */
+    /*a2.若cpumask是wq_numa_possible_cpumask某个node的子集,内存分配使用此node*/
 	if (wq_numa_enabled) {
 		for_each_node(node) {
 			if (cpumask_subset(attrs->cpumask,
@@ -3467,6 +3473,7 @@ static struct worker_pool *get_unbound_pool(const struct workqueue_attrs *attrs)
 	}
 
 	/* nope, create a new one */
+    /*a2.创建worker_pool并完成初始化*/
 	pool = kzalloc_node(sizeof(*pool), GFP_KERNEL, target_node);
 	if (!pool || init_worker_pool(pool) < 0)
 		goto fail;
@@ -3485,10 +3492,12 @@ static struct worker_pool *get_unbound_pool(const struct workqueue_attrs *attrs)
 		goto fail;
 
 	/* create and start the initial worker */
+    /*a3.创建worker*/
 	if (wq_online && !create_worker(pool))
 		goto fail;
 
 	/* install */
+    /*a4.加入到unbound_pool_hash表中,key根椐wqattrs产生*/
 	hash_add(unbound_pool_hash, &pool->hash_node, hash);
 
 	return pool;
@@ -3767,6 +3776,10 @@ apply_wqattrs_prepare(struct workqueue_struct *wq,
 	 * If the user configured cpumask doesn't overlap with the
 	 * wq_unbound_cpumask, we fallback to the wq_unbound_cpumask.
 	 */
+    /*
+    wq_unbound_cpumask默认表示workqueue对所有的cpu都可见 
+    避免用户配置workqueue_attrs的cpu_mask对所有的cpu都无效.
+    */
 	copy_workqueue_attrs(new_attrs, attrs);
 	cpumask_and(new_attrs->cpumask, new_attrs->cpumask, wq_unbound_cpumask);
 	if (unlikely(cpumask_empty(new_attrs->cpumask)))
@@ -3789,6 +3802,15 @@ apply_wqattrs_prepare(struct workqueue_struct *wq,
 		goto out_free;
 
 	for_each_node(node) {
+        /* 
+        NUMA 每个node可能包含多个cpu,即多个cpu共享memory与bus.
+        cpu_mask根椐node分类,假设node含有n个cpu,每个node的cpu_mask组合2的n方. 
+        理论上这个node就有2的n方个worker_pool,这些woker_pool对所有的work_queue都是共享的. 
+        需要时中介者pool_workqueue将两者关联上. 
+        所以worker_pool的内存分配分两种:NUMA_NO_NODE与指定node分配. 
+        pool_workqueue,worker内存分配特性也是一样的(根椐pool->node来分配的). 
+        换言之,指定node的话, worker_pool,pool_workqueue,worker三者内存都从此node分配.
+        */
 		if (wq_calc_node_cpumask(new_attrs, node, -1, tmp_attrs->cpumask)) {
 			ctx->pwq_tbl[node] = alloc_unbound_pwq(wq, tmp_attrs);
 			if (!ctx->pwq_tbl[node])
@@ -3860,6 +3882,10 @@ static int apply_workqueue_attrs_locked(struct workqueue_struct *wq,
 		return -EINVAL;
 
 	/* creating multiple pwqs breaks ordering guarantee */
+    /* 
+      ordered workequeue表示work是按顺序执行的,没有并发.
+      ordered workequeue只有一个worker pool,若拥有多个worker_pool无法保证work的顺序性
+    */
 	if (!list_empty(&wq->pwqs)) {
 		if (WARN_ON(wq->flags & __WQ_ORDERED_EXPLICIT))
 			return -EINVAL;
@@ -3996,6 +4022,12 @@ static int alloc_and_link_pwqs(struct workqueue_struct *wq)
 	bool highpri = wq->flags & WQ_HIGHPRI;
 	int cpu, ret;
 
+    /*
+    bound workqueue:谁queue work谁负责的原则,所以worker_pool是per_cpu的, 
+    即workqueue与worker_pool对应的关系是1对多,故中介者pool_workqueue也应是per_cpu的. 
+    unbound workqueue:谁queue work都可占有的原则,但由于NUMA架构,非本地内存访问会较慢,所以是 
+    一个node对应分配一个worker_pool,这样可以加快执行速度.
+    */
 	if (!(wq->flags & WQ_UNBOUND)) {
 		wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
 		if (!wq->cpu_pwqs)
@@ -4107,7 +4139,7 @@ struct workqueue_struct *__alloc_workqueue_key(const char *fmt,
 	 * Workqueues which may be used during memory reclaim should
 	 * have a rescuer to guarantee forward progress.
 	 */
-    /*a3.为第一个Workqueue创建一个reclaim worker,确保内存回收时能够继续工作*/
+    /*a3.为每一个Workqueue创建一个reclaim worker,确保内存回收时能够继续工作*/
 	if (flags & WQ_MEM_RECLAIM) {
 		struct worker *rescuer;
 
@@ -5678,12 +5710,17 @@ int __init workqueue_init_early(void)
 	WARN_ON(__alignof__(struct pool_workqueue) < __alignof__(long long));
 
 	BUG_ON(!alloc_cpumask_var(&wq_unbound_cpumask, GFP_KERNEL));
+    /*wq_unbound_cpumask 对所有cpu均可见*/
 	cpumask_copy(wq_unbound_cpumask, cpu_possible_mask);
 
 	pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
 
 	/* initialize CPU pools */
-    /*a1.初始化bind worker_pool*/
+    /* 
+    a1.初始化bound worker_pool
+    worker_pool是per_cpu的,即每一个cpu都有专属的worker_pool. 
+    cpumask_of(cpu)表示掩码只有cpu对应的位为1.
+    */
 	for_each_possible_cpu(cpu) {
 		struct worker_pool *pool;
 
@@ -5705,7 +5742,11 @@ int __init workqueue_init_early(void)
 	}
 
 	/* create default unbound and ordered wq attrs */
-    /*创建unbound wq 属性*/
+    /* 
+      a2.创建unbound wq 属性
+      unbound_std_wq_attrs与ordered_wq_attrs的nice都分为两类[0,HIGHPRI_NICE_LEVEL],
+      只是numa属性不一样.unbound_std numa,ordered no_numa.
+    */
 	for (i = 0; i < NR_STD_WORKER_POOLS; i++) {
 		struct workqueue_attrs *attrs;
 
