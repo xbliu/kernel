@@ -1917,6 +1917,12 @@ static int handler_new_ref(struct v4l2_ctrl_handler *hdl,
 	   the last element in the list has a lower ID.
 	   This ensures that when elements are added in ascending order the
 	   insertion is an O(1) operation. */
+	/*
+	v4l2_ctrl_ref按两种方式同时组织:
+	1)hdl->ctrl_refs列表中以id从小到大
+	2)hdl->buckets中以hash方式存储
+	方便快速查找id对应的当前v4l2_ctrl与下一个id对应的v4l2_ctrl
+	*/   
 	if (list_empty(&hdl->ctrl_refs) || id > node2id(hdl->ctrl_refs.prev)) {
 		list_add_tail(&new_ref->node, &hdl->ctrl_refs);
 		goto insert_in_hash;
