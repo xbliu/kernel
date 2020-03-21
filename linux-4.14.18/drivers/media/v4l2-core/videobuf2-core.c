@@ -661,8 +661,9 @@ int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 		dprintk(1, "streaming active\n");
 		return -EBUSY;
 	}
-
-	if (*count == 0 || q->num_buffers != 0 || q->memory != memory) {
+    
+    /*count==0,video buffer的数量,内存类型不一致释放之前,重新分配*/
+	if (*count == 0 || q->num_buffe之前,重新分配rs != 0 || q->memory != memory) {
 		/*
 		 * We already have buffers allocated, so first check if they
 		 * are not in use and can be freed.
@@ -1996,7 +1997,7 @@ int vb2_core_queue_init(struct vb2_queue *q)
 
 	if (q->buf_struct_size == 0)
 		q->buf_struct_size = sizeof(struct vb2_buffer);
-
+    /*设置dma数据的方向*/
 	if (q->bidirectional)
 		q->dma_dir = DMA_BIDIRECTIONAL;
 	else

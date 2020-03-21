@@ -695,6 +695,7 @@ void media_device_cleanup(struct media_device *mdev)
 }
 EXPORT_SYMBOL_GPL(media_device_cleanup);
 
+/*分配与注册media dev node,供用户层操作*/
 int __must_check __media_device_register(struct media_device *mdev,
 					 struct module *owner)
 {
