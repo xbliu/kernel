@@ -1536,6 +1536,25 @@ retry:
  *
  * Return: %false if @work was already on a queue, %true otherwise.
  */
+/*
+同一时间无论bound还是unbound workqueue,同一work只能被系统的中一个worker处理,即任何work都是非重入的.
+1)同一时间同一work被queue多次,pending的work只会挂入一次workqueue(同一时刻只有一个pending的work)
+    queue_work_on
+    -->test_and_set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(work)
+2)不同时间的同一work多次queue,若work正在被执行,挂入上一次的worker_pool.也就是相同的worker_pool
+    __queue_work
+    --->
+        last_pool = get_work_pool(work)
+        worker = find_worker_executing_work(last_pool, work)
+        if (worker && worker->current_pwq->wq == wq) {
+			pwq = worker->current_pwq;
+		}
+3)若当前worker_pool有一worker正在执行同一work,将其挂入此worker
+    process_one_work
+    --->
+        collision = find_worker_executing_work(pool, work)
+同一时间同一work至多只有一个pending与一个正在执行中.
+*/
 bool queue_work_on(int cpu, struct workqueue_struct *wq,
 		   struct work_struct *work)
 {
@@ -2134,6 +2153,7 @@ __acquires(&pool->lock)
 	 * currently executing one.
 	 */
     /* 
+      单个work不应由单个cpu 上的多个worker同时执行(阻止了单个work的并发).
       a1.查找此work是否已由其它worker上处理.
       根椐cache特性,即然已有其它worker处理,当然继续由此worker处理更快.
     */
