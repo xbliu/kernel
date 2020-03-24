@@ -851,6 +851,10 @@ static void wake_up_worker(struct worker_pool *pool)
  * CONTEXT:
  * spin_lock_irq(rq->lock)
  */
+ /*
+ ttwu_activate 中调用,当task激活的时候判断是PF_WORKER(worker线程)时调用此函数,
+ worker_thread函数中一开始置此标志.
+*/
 void wq_worker_waking_up(struct task_struct *task, int cpu)
 {
 	struct worker *worker = kthread_data(task);
@@ -875,6 +879,7 @@ void wq_worker_waking_up(struct task_struct *task, int cpu)
  * Return:
  * Worker task on @cpu to wake up, %NULL if none.
  */
+ /*此函数在schedule中被调用*/
 struct task_struct *wq_worker_sleeping(struct task_struct *task)
 {
 	struct worker *worker = kthread_data(task), *to_wakeup = NULL;
@@ -885,12 +890,26 @@ struct task_struct *wq_worker_sleeping(struct task_struct *task)
 	 * workers, also reach here, let's not access anything before
 	 * checking NOT_RUNNING.
 	 */
+	/*
+	Resuers 救急完后或者普通worker处理完所有的work之后即没有任务处理时都会睡眠
+	*/
 	if (worker->flags & WORKER_NOT_RUNNING)
 		return NULL;
 
 	pool = worker->pool;
 
 	/* this can only happen on the local cpu */
+	/*
+	worker_pool 是bound CPU型的,unbound CPU型的worker_pool对nr_running无贡献
+	Q:为什么这么做呢？
+	A:bound worker pool始终保持有一个idle worker,以免当前运行的worker阻塞睡眠,导致后续work无法运行.
+	unbound worker pool策略是每个worker开始工作时只要worklist不为空就创建一个worker处理work,接着处理
+	work直到worklist为空.所以即使worker阻塞,总有一个woker会继续工作.那么按照这种模式的话,
+	只要work不断加入,worker岂不是越来越多.那么如何限制呢？
+	1)让worker不创建,即设置worker上限,但这样的话,所有的worker仍然可能会阻塞,达不到防阻塞的目的.
+	2)让work不加入,即设置work上限,后续插入的work加到入pwq->delayed_works.等当前所有的work处理完后再
+	将其移入到worker->worklist中处理.
+	*/
 	if (WARN_ON_ONCE(pool->cpu != raw_smp_processor_id()))
 		return NULL;
 
@@ -905,6 +924,11 @@ struct task_struct *wq_worker_sleeping(struct task_struct *task)
 	 * manipulating idle_list, so dereferencing idle_list without pool
 	 * lock is safe.
 	 */
+	/*
+	bound CPU型运行在本地cpu上,持有w/rq锁并禁止抢占,所以无需持有pool lock.
+	当前worker准备sleep,取下一个idle worker继续工作,
+	即可以避免work相互依赖造成死锁,又可以提升级处理效率.
+	*/ 
 	if (atomic_dec_and_test(&pool->nr_running) &&
 	    !list_empty(&pool->worklist))
 		to_wakeup = first_idle_worker(pool);
@@ -928,6 +952,7 @@ static inline void worker_set_flags(struct worker *worker, unsigned int flags)
 	WARN_ON_ONCE(worker->task != current);
 
 	/* If transitioning into NOT_RUNNING, adjust nr_running. */
+	/*由RUNNING->NOT_RUNNING状态切换,nr_running自减*/
 	if ((flags & WORKER_NOT_RUNNING) &&
 	    !(worker->flags & WORKER_NOT_RUNNING)) {
 		atomic_dec(&pool->nr_running);
@@ -960,6 +985,7 @@ static inline void worker_clr_flags(struct worker *worker, unsigned int flags)
 	 * that the nested NOT_RUNNING is not a noop.  NOT_RUNNING is mask
 	 * of multiple flags, not a single flag.
 	 */
+	/*由NOT_RUNNING向RUNNING状态切换,nr_running自增*/ 
 	if ((flags & WORKER_NOT_RUNNING) && (oflags & WORKER_NOT_RUNNING))
 		if (!(worker->flags & WORKER_NOT_RUNNING))
 			atomic_inc(&pool->nr_running);
@@ -1420,9 +1446,13 @@ retry:
 	 * pool to guarantee non-reentrancy.
 	 */
     /*
-    a4.work可能正在运行,为了确保work的callback function不会重入,该work最好是挂入此pool workqueue. 
+    a4.
+    1)work可能正在运行,为了确保work的callback function不会重入,该work最好是挂入此pool workqueue. 
     last_pool与选择的pwq->pool不一致,根据last pool找到对应的pool workqueue, 
-    再找到具体哪一个worker线程正在处理该work,若能找到此woker,使用它,否则还是pwq->pool 
+    再找到具体哪一个worker线程正在处理该work,若能找到此woker,使用它,否则还是pwq->pool.
+    2)出于性能考虑???
+        a.不同cpu抢占此任务,已在执行此任务的CPU明显会快些(cache影响)
+        b.同一cpu不同线程抢占
     */ 
 	last_pool = get_work_pool(work);
 	if (last_pool && last_pool != pwq->pool) {
@@ -1945,6 +1975,7 @@ static void pool_mayday_timeout(unsigned long __pool)
 	spin_lock_irq(&pool->lock);
 	spin_lock(&wq_mayday_lock);		/* for wq->maydays */
 
+	/*以MAYDAY_INTERVAL时间为间隔进行查询,没有可用的worker则启动resuer worker*/
 	if (need_to_create_worker(pool)) {
 		/*
 		 * We've been trying to create a new worker but
@@ -2256,6 +2287,28 @@ static void process_scheduled_works(struct worker *worker)
  *
  * Return: 0
  */
+ /*
+ worker_thread流程:
+ 1)
+ 	if (worker需要立即销毁) {
+ 		销毁
+ 		return 0;
+ 	}
+ 2)从idle_list列表中移除
+ 3)
+ 	if (不需要更多的worker处理) 
+ 		goto 6
+ 4)
+ 	if (无多余的worker成为manager worker && 创建worker)
+ 		goto 3
+ 5) 
+	 do {
+	 	处理工作
+	 } while(有工作待完成 && nr_running <=1)
+ 6)
+ 	加入idle_list并schedule()
+ 	goto 1
+ */
 static int worker_thread(void *__worker)
 {
 	struct worker *worker = __worker;
@@ -2308,6 +2361,11 @@ recheck:
 	 * management if applicable and concurrency management is restored
 	 * after being rebound.  See rebind_workers() for details.
 	 */
+	/*
+	WORKER_NOT_RUNNING=WORKER_PREP | WORKER_CPU_INTENSIVE | WORKER_UNBOUND | WORKER_REBOUND
+	这里清除WORKER_PREP | WORKER_REBOUND,即还有WORKER_CPU_INTENSIVE 与 WORKER_UNBOUND未清除
+	而这两者都是UNBOUND worker特性.所以unbound worker对nr_running不处理.
+	*/
 	worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
 
     /*
@@ -2404,6 +2462,7 @@ repeat:
 	spin_lock_irq(&wq_mayday_lock);
 
 	while (!list_empty(&wq->maydays)) {
+		/*从mayday list中取出第一个pwq进行处理*/
 		struct pool_workqueue *pwq = list_first_entry(&wq->maydays,
 					struct pool_workqueue, mayday_node);
 		struct worker_pool *pool = pwq->pool;
@@ -2425,6 +2484,9 @@ repeat:
 		 * process'em.
 		 */
 		WARN_ON_ONCE(!list_empty(scheduled));
+		/*
+		从worker_pool的worklist中迁移所有属于pwq的work到resuer->scheduled中,进行调度处理
+		*/
 		list_for_each_entry_safe(work, n, &pool->worklist, entry) {
 			if (get_work_pwq(work) == pwq) {
 				if (first)
@@ -2446,6 +2508,10 @@ repeat:
 			 * being used to relieve memory pressure, don't
 			 * incur MAYDAY_INTERVAL delay inbetween.
 			 */
+			 /*
+			 chained work或者pwq_activate_first_delayed产生当前pwq的work,
+			 为了缓解内存压力,将其再次放回mayday list进行处理.
+			*/
 			if (need_to_create_worker(pool)) {
 				spin_lock(&wq_mayday_lock);
 				get_pwq(pwq);
@@ -2571,7 +2637,8 @@ static void insert_wq_barrier(struct pool_workqueue *pwq,
 	 * checks and call back into the fixup functions where we
 	 * might deadlock.
 	 */
-	INIT_WORK_ONSTACK(&barr->work, wq_barrier_func);
+	 /*wq_barrier_func等work执行完成唤醒*/
+	INIT_WORK_ONSTACK(&barr->work, wq_barrier_func); 
 	__set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(&barr->work));
 
 	/*
@@ -2589,6 +2656,7 @@ static void insert_wq_barrier(struct pool_workqueue *pwq,
 	 * If @target is currently being executed, schedule the
 	 * barrier to the worker; otherwise, put it after @target.
 	 */
+	 /*work正在执行,barrier插入到scheduled列表否则链接到work*/
 	if (worker)
 		head = worker->scheduled.next;
 	else {
@@ -2601,6 +2669,7 @@ static void insert_wq_barrier(struct pool_workqueue *pwq,
 	}
 
 	debug_work_activate(&barr->work);
+	/*将barr->work加入到head*/
 	insert_work(pwq, &barr->work, head,
 		    work_color_to_flags(WORK_NO_COLOR) | linked);
 }
@@ -2683,6 +2752,11 @@ static bool flush_workqueue_prep_pwqs(struct workqueue_struct *wq,
  * This function sleeps until all work items which were queued on entry
  * have finished execution, but it is not livelocked by new incoming ones.
  */
+ /*
+ 一次只有一个flusher在进行(first flusher),后续的加入到flusher_queue/flushflusher_overflow(当color全用完的时候).
+ 每次flush,更新work_color与当前firt fluher的flush_color.
+ 当有多个flusher同时调用时,只需更新work_color即可.
+*/
 void flush_workqueue(struct workqueue_struct *wq)
 {
 	struct wq_flusher this_flusher = {
@@ -2731,8 +2805,8 @@ void flush_workqueue(struct workqueue_struct *wq)
 		} else {
 			/* wait in queue */
 			WARN_ON_ONCE(wq->flush_color == this_flusher.flush_color);
-			list_add_tail(&this_flusher.list, &wq->flusher_queue);
-			flush_workqueue_prep_pwqs(wq, -1, wq->work_color);
+			list_add_tail(&this_flusher.list, &wq->flusher_queue); //等待上一个flush处理完成
+			flush_workqueue_prep_pwqs(wq, -1, wq->work_color); //只更新pwq的work_color
 		}
 	} else {
 		/*
@@ -2773,6 +2847,10 @@ void flush_workqueue(struct workqueue_struct *wq)
 		struct wq_flusher *next, *tmp;
 
 		/* complete all the flushers sharing the current flush color */
+		/*
+		flusher_overflow可能有多个,但迁移的时候只更新一次,所以存在其共享flush_color的情况,
+		即多次flush,超出color容量后,当做一次处理.
+		*/
 		list_for_each_entry_safe(next, tmp, &wq->flusher_queue, list) {
 			if (next->flush_color != wq->flush_color)
 				break;
@@ -2787,6 +2865,7 @@ void flush_workqueue(struct workqueue_struct *wq)
 		wq->flush_color = work_next_color(wq->flush_color);
 
 		/* one color has been freed, handle overflow queue */
+		/*将flusher_overflow的flush迁往flusher_queue进行处理*/
 		if (!list_empty(&wq->flusher_overflow)) {
 			/*
 			 * Assign the same color to all overflowed
@@ -2794,6 +2873,7 @@ void flush_workqueue(struct workqueue_struct *wq)
 			 * flusher_queue.  This is the start-to-wait
 			 * phase for these overflowed flushers.
 			 */
+			/*flusher_overflow之前的work_color与flush_color都未更新的,故在迁移的时候需更新*/ 
 			list_for_each_entry(tmp, &wq->flusher_overflow, list)
 				tmp->flush_color = wq->work_color;
 
@@ -2819,6 +2899,10 @@ void flush_workqueue(struct workqueue_struct *wq)
 		list_del_init(&next->list);
 		wq->first_flusher = next;
 
+		/*
+		处于下一个flusher,退出由下一个flusher的while true再进行后续处理.
+		即后续处理等下一个flusher wakeup后会接着处理同样的流程.
+		*/
 		if (flush_workqueue_prep_pwqs(wq, wq->flush_color, -1))
 			break;
 
@@ -3679,6 +3763,10 @@ static struct pool_workqueue *alloc_unbound_pwq(struct workqueue_struct *wq,
  * Return: %true if the resulting @cpumask is different from @attrs->cpumask,
  * %false if equal.
  */
+ /*
+ cpumask 返回值 是attrs->cpumask与wq_numa_possible_cpumask[node]的交集,
+ 前提在于attrs->cpumask至少包含online cpu的cpumask一个子集.
+*/
 static bool wq_calc_node_cpumask(const struct workqueue_attrs *attrs, int node,
 				 int cpu_going_down, cpumask_t *cpumask)
 {
@@ -5853,8 +5941,23 @@ int __init workqueue_init(void)
 
 /*
 workqueue与worker分离,worker由worker_pool负责创建.workpool又分为bind与unbind. 
+bind workqueue多用于性能要求较高的情况
+unbind workqueue用于cpu消耗较大或者性能要求较低的情况(如处理少量的数据量)
+
 Q:worker_pool何时创建? 如何创建worker?由什么因素决定worker的数量? 
+	bound worker_pool静态定义的,unbound worker_pool workqueue_init时根椐workqueues列表中的workqueue属性创建
+	一个woker_pool关联多个worker.
+	bound worker_pool创建worker数量依赖于worker阻塞的数量,正常情况是两个.
+	unbound worker_pool创建worker数量依赖于插入work的数量(pwq->max_active)
 Q:worker如何处理work? 
+	见wq_worker_sleeping.
 Q:workqueue如何与workpool关联? 
+	workqueue与workpool不再是1:1的固定关系,由pwq连接两个.
+	worker_pool与workqueue是n:m关系(1个work_queue对应多个worker_pool,1个worker_pool可对应多个workqueue)
 Q:workqueue的work如何分发到work_pool? 
+	若pwq->nr_active < pwq->max_active
+	1)选定cpu(指定CPU(bound) /从unbound cpu_mask中选择合适的cpu)
+	2)根椐cput选定pwq(bound)/根椐cpu的内存node,获取pwq(unbound)
+	若pwq->nr_active = pwq->max_active,挂入到pwq->delayed_works列表中
 */
+
