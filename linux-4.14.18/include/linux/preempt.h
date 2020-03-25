@@ -98,13 +98,13 @@
  * Note: due to the BH disabled confusion: in_softirq(),in_interrupt() really
  *       should not be used in new code.
  */
-#define in_irq()		(hardirq_count())
-#define in_softirq()		(softirq_count())
+#define in_irq()		(hardirq_count()) //硬件中断上下文
+#define in_softirq()		(softirq_count()) //软件中断上下文(disable中断下半部或软中断处理中)
 #define in_interrupt()		(irq_count())
 #define in_serving_softirq()	(softirq_count() & SOFTIRQ_OFFSET)
 #define in_nmi()		(preempt_count() & NMI_MASK)
 #define in_task()		(!(preempt_count() & \
-				   (NMI_MASK | HARDIRQ_MASK | SOFTIRQ_OFFSET)))
+				   (NMI_MASK | HARDIRQ_MASK | SOFTIRQ_OFFSET))) //进程上下文
 
 /*
  * The preempt_count offset after preempt_disable();
