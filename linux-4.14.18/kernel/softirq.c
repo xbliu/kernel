@@ -317,6 +317,9 @@ asmlinkage __visible void do_softirq(void)
 	__u32 pending;
 	unsigned long flags;
 
+    /* 
+    在中断中不执行:意味着softirq不会嵌套
+    */
 	if (in_interrupt())
 		return;
 
@@ -324,6 +327,7 @@ asmlinkage __visible void do_softirq(void)
 
 	pending = local_softirq_pending();
 
+    /*有softirq触发且ksoftirqd未运行,处理softirq*/
 	if (pending && !ksoftirqd_running())
 		do_softirq_own_stack();
 
