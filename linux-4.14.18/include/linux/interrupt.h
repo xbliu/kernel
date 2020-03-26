@@ -537,8 +537,8 @@ static inline struct task_struct *this_cpu_ksoftirqd(void)
 struct tasklet_struct
 {
 	struct tasklet_struct *next;
-	unsigned long state;
-	atomic_t count;
+	unsigned long state; /*sched 表示已被调度正准备运行 run表示正在运行中*/
+	atomic_t count; /*0:表示处于激活中 非0:禁止运行 用于spin_lock某些场景disable tasklet*/
 	void (*func)(unsigned long);
 	unsigned long data;
 };

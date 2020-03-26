@@ -165,14 +165,26 @@ void __local_bh_enable_ip(unsigned long ip, unsigned int cnt)
 	/*
 	 * Are softirqs going to be turned on now:
 	 */
-	if (softirq_count() == SOFTIRQ_DISABLE_OFFSET)
+	if (softirq_count() == SOFTIRQ_DISABLE_OFFSET) //2 *(1<<8) = 1<<9
 		trace_softirqs_on(ip);
 	/*
 	 * Keep preemption disabled until we are done with
 	 * softirq processing:
 	 */
+	/*
+	Q:为什么不一次性全减掉?
+	A:do_softirq处理pending 的softirq时,当前task是不能被抢占的,若被抢占,task可能调度到其它CPU上去
+	(pending是per_cpu的),因此全减掉意味着可被抢占,所以减去了(SOFTIRQ_DISABLE_OFFSET-1),
+	即保证相应位减1,又保持了preempt的状态.
+	(全减去-->中断发生-->返回现场时当前task被抢占-->可能在其它CPU上运行)
+	*/
 	preempt_count_sub(cnt - 1);
 
+	/*
+	local_bh_disable/local_bh_enable可用于进程上下文中或中断上下文中,
+	若在进程上下文中临界区内发送中断,中断退出后有可能raise_softirq,但由于bh disable,softirq被禁止了,所以返回
+	临界区继续执行,故在退出临界区后需要raise softirq.
+	*/
 	if (unlikely(!in_interrupt() && local_softirq_pending())) {
 		/*
 		 * Run softirq if any pending. And do it in its own stack
@@ -258,22 +270,24 @@ asmlinkage __visible void __softirq_entry __do_softirq(void)
 	pending = local_softirq_pending();
 	account_irq_enter_time(current);
 
-	__local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);
+	__local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET); //enter 增加softirq计数退出时减去计数
 	in_hardirq = lockdep_softirq_start();
 
 restart:
 	/* Reset the pending bitmask before enabling irqs */
+	/*a1.处理softirq之前保存pending并清除,*/
 	set_softirq_pending(0);
 
 	local_irq_enable();
 
 	h = softirq_vec;
 
+	/*找到pending第一个置位的比特位,根据此比特位找到对应的软件中断描述符,执行action动作*/
 	while ((softirq_bit = ffs(pending))) {
 		unsigned int vec_nr;
 		int prev_count;
 
-		h += softirq_bit - 1;
+		h += softirq_bit - 1; //比特位转换为对应软件中断描述符
 
 		vec_nr = h - softirq_vec;
 		prev_count = preempt_count();
@@ -281,7 +295,7 @@ restart:
 		kstat_incr_softirqs_this_cpu(vec_nr);
 
 		trace_softirq_entry(vec_nr);
-		h->action(h);
+		h->action(h); //执行action
 		trace_softirq_exit(vec_nr);
 		if (unlikely(prev_count != preempt_count())) {
 			pr_err("huh, entered softirq %u %s %p with preempt_count %08x, exited with %08x?\n",
@@ -290,12 +304,19 @@ restart:
 			preempt_count_set(prev_count);
 		}
 		h++;
-		pending >>= softirq_bit;
+		pending >>= softirq_bit; //移除处理的比特位
 	}
 
 	rcu_bh_qs();
 	local_irq_disable();
-
+	/*
+	再次检测softirq的触发情况(软中断处理过程中可能发生了中断或触发了软中断),若发生了且满足以下条件
+	可继续处理.
+	1)软中断处理时间没有超过MAX_SOFTIRQ_TIME(2ms)
+	2)当前没有进程需要调度
+	3)一次软中断的处理的累积循环次数不能超过MAX_SOFTIRQ_RESTART(10)
+	否则唤醒softirqd内核线程进行处理.
+	*/
 	pending = local_softirq_pending();
 	if (pending) {
 		if (time_before(jiffies, end) && !need_resched() &&
@@ -404,8 +425,8 @@ void irq_exit(void)
 #endif
 
 	account_irq_exit_time(current);
-	preempt_count_sub(HARDIRQ_OFFSET);
-	if (!in_interrupt() && local_softirq_pending())
+	preempt_count_sub(HARDIRQ_OFFSET); //irq_enter增加计数,离开时减少计数
+	if (!in_interrupt() && local_softirq_pending()) //非中断上下文及有softirq发生,进行softirq处理.
 		invoke_softirq();
 
 	tick_irq_exit();
@@ -418,7 +439,7 @@ void irq_exit(void)
  */
 inline void raise_softirq_irqoff(unsigned int nr)
 {
-	__raise_softirq_irqoff(nr);
+	__raise_softirq_irqoff(nr); //标记softirq发生
 
 	/*
 	 * If we're in an interrupt or softirq, we're done
@@ -429,6 +450,7 @@ inline void raise_softirq_irqoff(unsigned int nr)
 	 * Otherwise we wake up ksoftirqd to make sure we
 	 * schedule the softirq soon.
 	 */
+	/*进程上下文中唤醒ksoftirqd执行softirq*/
 	if (!in_interrupt())
 		wakeup_softirqd();
 }
@@ -471,8 +493,8 @@ void __tasklet_schedule(struct tasklet_struct *t)
 	local_irq_save(flags);
 	t->next = NULL;
 	*__this_cpu_read(tasklet_vec.tail) = t;
-	__this_cpu_write(tasklet_vec.tail, &(t->next));
-	raise_softirq_irqoff(TASKLET_SOFTIRQ);
+	__this_cpu_write(tasklet_vec.tail, &(t->next)); //加入tasklet_vec列表
+	raise_softirq_irqoff(TASKLET_SOFTIRQ); //触发软中断
 	local_irq_restore(flags);
 }
 EXPORT_SYMBOL(__tasklet_schedule);
@@ -500,6 +522,17 @@ void __tasklet_hi_schedule_first(struct tasklet_struct *t)
 }
 EXPORT_SYMBOL(__tasklet_hi_schedule_first);
 
+/*
+tasklet_action工作流程:
+1)从per_cpu tasklet_vec列表中摘取list (tasklet_struct)
+2)依次调用list中的tasklet
+	2.1)若tasklet符合条件,执行
+	2.2)若tasklet未符合条件,将其放回per_cpu tasklet_vec列表尾部
+
+tasklet调用步骤:
+	tasklet_init
+	tasklet_schedule
+*/
 static __latent_entropy void tasklet_action(struct softirq_action *a)
 {
 	struct tasklet_struct *list;
@@ -513,12 +546,21 @@ static __latent_entropy void tasklet_action(struct softirq_action *a)
 	while (list) {
 		struct tasklet_struct *t = list;
 
-		list = list->next;
+		list = list->next; //下一个tasklet
 
+		/*
+		同一个tasklet不能在不同CPU上并发
+		1)tasklet_schedule
+			-->test_and_set_bit(TASKLET_STATE_SCHED)
+		保证同一个tasklet只有一个处于SCHED状态
+		2)tasklet_trylock
+			--->test_and_set_bit(TASKLET_STATE_RUN
+		保证同一个tasklet只有一个处于RUN状态
+		*/
 		if (tasklet_trylock(t)) {
-			if (!atomic_read(&t->count)) {
+			if (!atomic_read(&t->count)) { //未激活的tasklet不能运行
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED,
-							&t->state))
+							&t->state)) //3)先清除SCHED再func():能够尽快的响应此tasklet的新调度
 					BUG();
 				t->func(t->data);
 				tasklet_unlock(t);
@@ -527,6 +569,9 @@ static __latent_entropy void tasklet_action(struct softirq_action *a)
 			tasklet_unlock(t);
 		}
 
+		/*
+		tasklet未能获取锁,放回tasklet_vec中:发现此tasklet已经在其它CPU上运行或者tasklet被disable
+		*/
 		local_irq_disable();
 		t->next = NULL;
 		*__this_cpu_read(tasklet_vec.tail) = t;
@@ -763,6 +808,36 @@ static __init int spawn_ksoftirqd(void)
 	return 0;
 }
 early_initcall(spawn_ksoftirqd);
+/*
+Q:softirq调用的时机?
+1)中断上半部退出时 
+	irq_exit --->invoke_softirq (非中断上下文,即某一次中断退出时可能回到进程上下文,也可能是返回上一次中断)
+2)用户主动调用
+	raise_softirq
+3)使能下半部中断
+	local_bh_enable
+4)唤醒softirq内核线程处理 (如cpu负载较高时)
+调用时会检测是否在中断上下文中,若在则不调度,即从硬件中断上下文退出到上一次软件中断上下文中,
+softirq是不允许调度的,即软件中断在一个CPU上总是串行的.
+
+Q:softirq如何表示irq触发?
+__softirq_pending记录softirq的发生,一位对应一种softirq,softirq最大数目为NR_SOFTIRQS.
+
+Q:preempt_count各位意义
+bits 0-7 表示抢占计数 最大支持嵌套深度为256
+bits 8-15 表示软中断计数 最大支持嵌套深度为256
+(bits8 代表软中断处理中<in_serving_softirq> bits9-15 用于local_bh_disable/local_bh_enable,最大可嵌套127)
+bits 16-19 表示硬件中断计数 最大支持嵌套深度16 
+(在硬件中断上下文中中断是禁上的,理论上中断不会嵌套,但有例外所以深度超过1)
+bits 20表示NMI中断
+bits 63表示进程是否需要调度 (最高位)
+
+中断上下文=软中断上下文 + 硬件中断上下文(中断上半部) + NMI中断
+软件中断上下文包括软中断处理中与disable中断下半部的临界区
+
+在中断上下文中进入时增加计数,退出时减去计数
+*/
+
 
 /*
  * [ These __weak aliases are kept in a separate compilation unit, so that
