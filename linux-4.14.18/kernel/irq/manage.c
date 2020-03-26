@@ -1723,6 +1723,11 @@ EXPORT_SYMBOL(free_irq);
  *	IRQF_TRIGGER_*		Specify active edge(s) or level
  *
  */
+/*
+二个关键的数据结构:
+struct irqaction
+struct irq_desc
+*/
 int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 			 irq_handler_t thread_fn, unsigned long irqflags,
 			 const char *devname, void *dev_id)
@@ -1743,25 +1748,39 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 	 * Also IRQF_COND_SUSPEND only makes sense for shared interrupts and
 	 * it cannot be set along with IRQF_NO_SUSPEND.
 	 */
+    /* 
+    IRQF_SHARED:表示几个设备共用一个中断 
+    仅中断号不能区分多个共享者,所以需要额外的参数区分是否是自已的中断.
+    */
 	if (((irqflags & IRQF_SHARED) && !dev_id) ||
 	    (!(irqflags & IRQF_SHARED) && (irqflags & IRQF_COND_SUSPEND)) ||
 	    ((irqflags & IRQF_NO_SUSPEND) && (irqflags & IRQF_COND_SUSPEND)))
 		return -EINVAL;
 
+    /*a1.获取irq 描述符*/
 	desc = irq_to_desc(irq);
 	if (!desc)
 		return -EINVAL;
-
+    /*
+    _IRQ_NOREQUEST表示不能请求中断:对于级联的中断控制器,若中断控制器所有外设中断都用于中转, 
+    即意味着此中断控制器对用户是不可见的,自然而然就不能申请中断 
+    _IRQ_PER_CPU_DEVID:表示中断是PER_CPU私有的,即私有外设中断(PPI),如本地时钟,用户不可申请.
+    */
 	if (!irq_settings_can_request(desc) ||
 	    WARN_ON(irq_settings_is_per_cpu_devid(desc)))
 		return -EINVAL;
 
+    /*
+    无handler且thread_fn不为空,表示中断线程化 
+    irq_default_primary_handler为默认中断线程化处理handler,可用于oneshot中断
+    */
 	if (!handler) {
 		if (!thread_fn)
 			return -EINVAL;
 		handler = irq_default_primary_handler;
 	}
 
+    /*a2.分配并初始化irq action*/
 	action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
 	if (!action)
 		return -ENOMEM;
@@ -1778,6 +1797,7 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 		return retval;
 	}
 
+    /*a3.注册irq action*/
 	retval = __setup_irq(irq, desc, action);
 
 	if (retval) {
