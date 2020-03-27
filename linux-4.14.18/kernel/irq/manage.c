@@ -1025,18 +1025,29 @@ EXPORT_SYMBOL_GPL(irq_wake_thread);
 
 static int irq_setup_forced_threading(struct irqaction *new)
 {
+    /*
+    未设置force_irqthreads:表示内核未配置线程化中断 
+    IRQF_NO_THREAD:用户不希望线程化中断 
+    IRQF_PERCPU:smp中cpu私有化中断,不强制线程化
+    IRQF_ONESHOT:中断是一次性触发的,不能嵌套.
+    */
 	if (!force_irqthreads)
 		return 0;
 	if (new->flags & (IRQF_NO_THREAD | IRQF_PERCPU | IRQF_ONESHOT))
 		return 0;
 
-	new->flags |= IRQF_ONESHOT;
+	new->flags |= IRQF_ONESHOT; //强制线程化中断标志为ONESHOT型
 
 	/*
 	 * Handle the case where we have a real primary handler and a
 	 * thread handler. We force thread them as well by creating a
 	 * secondary action.
 	 */
+    /*
+    对于new->thread_fn为空的情况直接强制线程化 
+    对于已有primary handler与thread handler,将其作为二级线程化action. 
+    <估计是怕primary handler处理时间太长影响线程化效率,这样一来的话线程不是太浪费了吗???>
+    */
 	if (new->handler != irq_default_primary_handler && new->thread_fn) {
 		/* Allocate the secondary action */
 		new->secondary = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
@@ -1049,7 +1060,7 @@ static int irq_setup_forced_threading(struct irqaction *new)
 		new->secondary->name = new->name;
 	}
 	/* Deal with the primary handler */
-	set_bit(IRQTF_FORCED_THREAD, &new->thread_flags);
+	set_bit(IRQTF_FORCED_THREAD, &new->thread_flags); //标志该中断是被强制线程化
 	new->thread_fn = new->handler;
 	new->handler = irq_default_primary_handler;
 	return 0;
@@ -1128,6 +1139,14 @@ setup_irq_thread(struct irqaction *new, unsigned int irq, bool secondary)
  * interrupt related functions. desc->request_mutex solely serializes
  * request/free_irq().
  */
+/*
+主要有以下方面需要设置: 
+1)中断的触发方式 
+2)首次中断注册需要初始化相关中断资源 
+3)对于共享中断,需要检测与之前的中断方式是否一致,挂入到action list 
+4)对于非嵌套的线程化中断,需要创建线程 
+5)中断强制线程化相关处理
+*/
 static int
 __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 {
@@ -1143,12 +1162,13 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	if (!try_module_get(desc->owner))
 		return -ENODEV;
 
-	new->irq = irq;
+	new->irq = irq; //关联上irq num
 
 	/*
 	 * If the trigger type is not specified by the caller,
 	 * then use the default for this interrupt.
 	 */
+    /*irq触发类型未指定采用默认的触发类型*/
 	if (!(new->flags & IRQF_TRIGGER_MASK))
 		new->flags |= irqd_get_trigger_type(&desc->irq_data);
 
@@ -1156,6 +1176,9 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * Check whether the interrupt nests into another interrupt
 	 * thread.
 	 */
+    /*
+    检测中断是否嵌套入另一个中断线程
+    */
 	nested = irq_settings_is_nested_thread(desc);
 	if (nested) {
 		if (!new->thread_fn) {
@@ -1169,6 +1192,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 		 */
 		new->handler = irq_nested_primary_handler;
 	} else {
+        /*检测中断是否可以线程化<从硬件层面来看 如timer时钟中断就不能中断线程化>*/
 		if (irq_settings_can_thread(desc)) {
 			ret = irq_setup_forced_threading(new);
 			if (ret)
@@ -1181,12 +1205,13 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * and the interrupt does not nest into another interrupt
 	 * thread.
 	 */
+    /*非嵌套的线程化中断创建线程*/
 	if (new->thread_fn && !nested) {
-		ret = setup_irq_thread(new, irq, false);
+		ret = setup_irq_thread(new, irq, false); //一级线程
 		if (ret)
 			goto out_mput;
 		if (new->secondary) {
-			ret = setup_irq_thread(new->secondary, irq, true);
+			ret = setup_irq_thread(new->secondary, irq, true); //二级线程
 			if (ret)
 				goto out_thread;
 		}
@@ -1201,6 +1226,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * chip flags, so we can avoid the unmask dance at the end of
 	 * the threaded handler for those.
 	 */
+    /*有些芯片本身是one shot 安全的,无需设置*/
 	if (desc->irq_data.chip->flags & IRQCHIP_ONESHOT_SAFE)
 		new->flags &= ~IRQF_ONESHOT;
 
@@ -1219,6 +1245,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	chip_bus_lock(desc);
 
 	/* First installed action requests resources. */
+    /*首次安装action需进行一些初始化*/
 	if (!desc->action) {
 		ret = irq_request_resources(desc);
 		if (ret) {
@@ -1287,6 +1314,10 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * !ONESHOT irqs the thread mask is 0 so we can avoid a
 	 * conditional in irq_wake_thread().
 	 */
+    /*
+    handler = NULL但未设置oneshot标志且芯片本身不支one shot safe,会出问题. 
+    对于ONESHOT型设置线程掩码
+    */
 	if (new->flags & IRQF_ONESHOT) {
 		/*
 		 * Unlikely to have 32 resp 64 irqs sharing one line,
@@ -1407,6 +1438,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * Check whether we disabled the irq via the spurious handler
 	 * before. Reenable it and give it another chance.
 	 */
+    /*如果中断之前被虚假disable了，重新enable中断*/
 	if (shared && (desc->istate & IRQS_SPURIOUS_DISABLED)) {
 		desc->istate &= ~IRQS_SPURIOUS_DISABLED;
 		__enable_irq(desc);
@@ -1724,9 +1756,19 @@ EXPORT_SYMBOL(free_irq);
  *
  */
 /*
-二个关键的数据结构:
-struct irqaction
-struct irq_desc
+三个关键的数据结构:
+1)struct irqaction
+2)struct irq_desc
+3)struct irq_chip
+
+目前接口有两套:
+1)传统中断(上半部与下半部)
+2)线程化中断申请.主要目的是把中断上下文的任务迁移到线程中,减少系统关中断的时间,增强系统的实时性.
+若thread_fn为NULL,handler不为空: 传统irq申请
+handler为空,thread_fn不为空: 线程化中断申请
+handler,thread_fn都不为空:视具体情况而定.
+ontshot为线程化中断.
+强制中断线程化:强制所有可转换的中断转变为线程化中断.
 */
 int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 			 irq_handler_t thread_fn, unsigned long irqflags,
@@ -1762,8 +1804,8 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 	if (!desc)
 		return -EINVAL;
     /*
-    _IRQ_NOREQUEST表示不能请求中断:对于级联的中断控制器,若中断控制器所有外设中断都用于中转, 
-    即意味着此中断控制器对用户是不可见的,自然而然就不能申请中断 
+    _IRQ_NOREQUEST表示不能请求中断:对于级联的中断控制器,若中断控制器某个中断用于中转(级联), 
+    即意味着此中断对用户是不可见的,自然而然就不能申请中断 
     _IRQ_PER_CPU_DEVID:表示中断是PER_CPU私有的,即私有外设中断(PPI),如本地时钟,用户不可申请.
     */
 	if (!irq_settings_can_request(desc) ||
@@ -1771,8 +1813,8 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 		return -EINVAL;
 
     /*
-    无handler且thread_fn不为空,表示中断线程化 
-    irq_default_primary_handler为默认中断线程化处理handler,可用于oneshot中断
+    无handler且thread_fn不为空,表示线程中断化
+    irq_default_primary_handler为默认线程中断化处理handler,可用于oneshot中断.
     */
 	if (!handler) {
 		if (!thread_fn)
