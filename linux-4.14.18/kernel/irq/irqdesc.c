@@ -600,10 +600,13 @@ void irq_init_desc(unsigned int irq)
  */
 int generic_handle_irq(unsigned int irq)
 {
-	struct irq_desc *desc = irq_to_desc(irq);
+	struct irq_desc *desc = irq_to_desc(irq); //根椐irq找到irq_desc
 
 	if (!desc)
 		return -EINVAL;
+    /*
+    highlevel irq-events handler处理  
+    */
 	generic_handle_irq_desc(desc);
 	return 0;
 }
@@ -626,11 +629,11 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	unsigned int irq = hwirq;
 	int ret = 0;
 
-	irq_enter();
+	irq_enter(); //进入irq <硬件中断上下文>
 
 #ifdef CONFIG_IRQ_DOMAIN
 	if (lookup)
-		irq = irq_find_mapping(domain, hwirq);
+		irq = irq_find_mapping(domain, hwirq); //找到硬件irq对应的irq num
 #endif
 
 	/*
@@ -644,7 +647,7 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 		generic_handle_irq(irq);
 	}
 
-	irq_exit();
+	irq_exit(); //irq 退出
 	set_irq_regs(old_regs);
 	return ret;
 }
