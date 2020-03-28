@@ -140,6 +140,7 @@ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags
 
 	record_irq_time(desc);
 
+    /*依次处理irq desc中所有的action*/
 	for_each_action_of_desc(desc, action) {
 		irqreturn_t res;
 
@@ -197,6 +198,7 @@ irqreturn_t handle_irq_event(struct irq_desc *desc)
 {
 	irqreturn_t ret;
 
+    /*清除IRQS_PENDING,设置IRQD_IRQ_INPROGRESS表示中断处理中*/
 	desc->istate &= ~IRQS_PENDING;
 	irqd_set(&desc->irq_data, IRQD_IRQ_INPROGRESS);
 	raw_spin_unlock(&desc->lock);
@@ -204,6 +206,7 @@ irqreturn_t handle_irq_event(struct irq_desc *desc)
 	ret = handle_irq_event_percpu(desc);
 
 	raw_spin_lock(&desc->lock);
+    /*中断处理完成*/
 	irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
 	return ret;
 }

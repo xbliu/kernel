@@ -508,6 +508,7 @@ static bool irq_may_run(struct irq_desc *desc)
  *	Note: The caller is expected to handle the ack, clear, mask and
  *	unmask issues if necessary.
  */
+/*处理哪些无需中断硬件控制的流程*/
 void handle_simple_irq(struct irq_desc *desc)
 {
 	raw_spin_lock(&desc->lock);
@@ -515,6 +516,7 @@ void handle_simple_irq(struct irq_desc *desc)
 	if (!irq_may_run(desc))
 		goto out_unlock;
 
+    /*清除IRQS_REPLAY,IRQS_WAITING*/
 	desc->istate &= ~(IRQS_REPLAY | IRQS_WAITING);
 
 	if (unlikely(!desc->action || irqd_irq_disabled(&desc->irq_data))) {
@@ -723,6 +725,10 @@ EXPORT_SYMBOL_GPL(handle_fasteoi_irq);
  *	the handler was running. If all pending interrupts are handled, the
  *	loop is left.
  */
+/*
+中断触发方式为边沿触发,即在上升沿或下降沿的过程产生中断信号,当此信号产生时,
+中断控制器将其锁住,上报中断给CPU,但进行新的一次触发时须先得响应此中断.
+*/
 void handle_edge_irq(struct irq_desc *desc)
 {
 	raw_spin_lock(&desc->lock);
@@ -748,6 +754,7 @@ void handle_edge_irq(struct irq_desc *desc)
 	kstat_incr_irqs_this_cpu(desc);
 
 	/* Start handling the irq */
+    /*响应中断*/
 	desc->irq_data.chip->irq_ack(&desc->irq_data);
 
 	do {
@@ -785,6 +792,7 @@ EXPORT_SYMBOL(handle_edge_irq);
  * Similar as the above handle_edge_irq, but using eoi and w/o the
  * mask/unmask logic.
  */
+/*在中断处理完后发送eoi(end of interrupt)消息,启动下一次中断的响应处理*/
 void handle_edge_eoi_irq(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
@@ -819,7 +827,7 @@ void handle_edge_eoi_irq(struct irq_desc *desc)
 		 !irqd_irq_disabled(&desc->irq_data));
 
 out_eoi:
-	chip->irq_eoi(&desc->irq_data);
+	chip->irq_eoi(&desc->irq_data); //发送eoi消息
 	raw_spin_unlock(&desc->lock);
 }
 #endif
@@ -836,11 +844,13 @@ void handle_percpu_irq(struct irq_desc *desc)
 
 	kstat_incr_irqs_this_cpu(desc);
 
+    /*响应中断*/
 	if (chip->irq_ack)
 		chip->irq_ack(&desc->irq_data);
 
 	handle_irq_event_percpu(desc);
 
+    /*发送eoi消息*/
 	if (chip->irq_eoi)
 		chip->irq_eoi(&desc->irq_data);
 }
@@ -1427,3 +1437,73 @@ int irq_chip_pm_put(struct irq_data *data)
 
 	return (retval < 0) ? retval : 0;
 }
+
+
+/* 
+一、中断处理流程 
+1)arch/arm64/kernel/entry.S <irq_handler>
+  //Interrupt handling.
+	.macro	irq_handler
+	ldr_l	x1, handle_arch_irq
+	mov	x0, sp
+	irq_stack_entry
+	blr	x1
+	irq_stack_exit
+	.endm
+    .text
+ 
+2) 
+arch/arm64/kernel/irq.c <handle_arch_irq> 
+    void (*handle_arch_irq)(struct pt_regs *) = NULL;
+    void __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
+    {
+    	if (handle_arch_irq)
+    		return;
+
+    	handle_arch_irq = handle_irq;
+    }
+3) drivers/irqchip/irq-gic-v3.c <set_handle_irq> 
+   set_handle_irq(gic_handle_irq)
+ 
+4) drivers/irqchip/irq-gic-v3.c <gic_handle_irq>
+static asmlinkage void __exception_irq_entry gic_handle_irq(struct pt_regs *regs) 
+---> 
+    irqnr = gic_read_iar();
+    err = handle_domain_irq(gic_data.domain, irqnr, regs);
+    --->
+        return __handle_domain_irq(domain, hwirq, true, regs);
+ 
+5)kernel/irq/irqdesc.c <__handle_domain_irq> 
+int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
+            bool lookup, struct pt_regs *regs)
+---> 
+    irq_enter()
+    irq = irq_find_mapping(domain, hwirq)
+    generic_handle_irq(irq)
+    --->
+        struct irq_desc *desc = irq_to_desc(irq)
+        generic_handle_irq_desc(desc)
+        --->
+            desc->handle_irq(desc)
+    irq_exit()
+ 
+6)include/linux/irqdesc.h
+    irq_set_handler_locked 
+    irq_set_chip_handler_name_locked
+ 
+//highlevel irq-events handler 处理与中断控制器相关的irq处理流程
+主要有以下几个:
+a.handle_edge_irq 
+b.handle_nested_irq
+c.handle_simple_irq
+d.handle_untracked_irq
+e.handle_level_irq
+f.handle_fasteoi_irq 
+h.handle_percpu_irq 
+*/
+
+/*
+一、中断发生后,cpu做了哪些工作 
+二、中断发生后,需要处理哪些跟中断控制器相关的工作 
+三、外设的中断事件处理
+*/
