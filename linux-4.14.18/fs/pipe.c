@@ -737,7 +737,7 @@ fail_inode:
 int create_pipe_files(struct file **res, int flags)
 {
 	int err;
-	struct inode *inode = get_pipe_inode();
+	struct inode *inode = get_pipe_inode(); //分配inode
 	struct file *f;
 	struct path path;
 
@@ -745,6 +745,7 @@ int create_pipe_files(struct file **res, int flags)
 		return -ENFILE;
 
 	err = -ENOMEM;
+    /*构建path*/
 	path.dentry = d_alloc_pseudo(pipe_mnt->mnt_sb, &empty_name);
 	if (!path.dentry)
 		goto err_inode;
@@ -752,6 +753,7 @@ int create_pipe_files(struct file **res, int flags)
 
 	d_instantiate(path.dentry, inode);
 
+    //分配读文件描述符
 	f = alloc_file(&path, FMODE_WRITE, &pipefifo_fops);
 	if (IS_ERR(f)) {
 		err = PTR_ERR(f);
@@ -761,12 +763,14 @@ int create_pipe_files(struct file **res, int flags)
 	f->f_flags = O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT));
 	f->private_data = inode->i_pipe;
 
+    //分配写文件描述符
 	res[0] = alloc_file(&path, FMODE_READ, &pipefifo_fops);
 	if (IS_ERR(res[0])) {
 		err = PTR_ERR(res[0]);
 		goto err_file;
 	}
 
+    //存储文件描述符
 	path_get(&path);
 	res[0]->private_data = inode->i_pipe;
 	res[0]->f_flags = O_RDONLY | (flags & O_NONBLOCK);

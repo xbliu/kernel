@@ -246,11 +246,13 @@ struct dentry *mount_pseudo_xattr(struct file_system_type *fs_type, char *name,
 	struct inode *root;
 	struct qstr d_name = QSTR_INIT(name, strlen(name));
 
+    /*a1.分配super block*/
 	s = sget_userns(fs_type, NULL, set_anon_super, MS_KERNMOUNT|MS_NOUSER,
 			&init_user_ns, NULL);
 	if (IS_ERR(s))
 		return ERR_CAST(s);
 
+    /*a2.设置super block*/
 	s->s_maxbytes = MAX_LFS_FILESIZE;
 	s->s_blocksize = PAGE_SIZE;
 	s->s_blocksize_bits = PAGE_SHIFT;
@@ -258,6 +260,7 @@ struct dentry *mount_pseudo_xattr(struct file_system_type *fs_type, char *name,
 	s->s_op = ops ? ops : &simple_super_operations;
 	s->s_xattr = xattr;
 	s->s_time_gran = 1;
+    /*a3.分配root inode*/
 	root = new_inode(s);
 	if (!root)
 		goto Enomem;
@@ -269,6 +272,7 @@ struct dentry *mount_pseudo_xattr(struct file_system_type *fs_type, char *name,
 	root->i_ino = 1;
 	root->i_mode = S_IFDIR | S_IRUSR | S_IWUSR;
 	root->i_atime = root->i_mtime = root->i_ctime = current_time(root);
+    /*a4.分配root dentry*/
 	dentry = __d_alloc(s, &d_name);
 	if (!dentry) {
 		iput(root);
