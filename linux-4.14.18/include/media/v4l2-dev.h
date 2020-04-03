@@ -21,10 +21,15 @@
 
 #define VIDEO_MAJOR	81
 
-#define VFL_TYPE_GRABBER	0
-#define VFL_TYPE_VBI		1
-#define VFL_TYPE_RADIO		2
-#define VFL_TYPE_SUBDEV		3
+#define VFL_TYPE_GRABBER	0 //图像采集设备,如摄像头、调谐器
+/* 
+VBI= vertical blanking interval，也就是我们讲的场消隐期间.
+VBI在电视处理中是用来是垂直扫描完成从屏幕底部回到屏幕顶部的时间. 
+在这期间,没有任何的图像信息,利用这期间来传输一些信息,比如CC,图文,VPS/PDC,GEMSTAR等服务信息 
+*/
+#define VFL_TYPE_VBI		1 //从视频消隐的时间段获取信息的设备
+#define VFL_TYPE_RADIO		2 //无线电设备                         
+#define VFL_TYPE_SUBDEV		3 //子设备
 #define VFL_TYPE_SDR		4
 #define VFL_TYPE_TOUCH		5
 #define VFL_TYPE_MAX		6
