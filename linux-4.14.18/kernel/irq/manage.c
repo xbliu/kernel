@@ -1177,7 +1177,11 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * thread.
 	 */
     /*
-    检测中断是否嵌套入另一个中断线程
+    检测中断是否嵌套入另一个中断线程,nested中断无需primary handler.
+    nested irq:多个中断共用父中断的thread handler.
+    假设有A<--B两个中断控制器级联,若A、B都是GIC,A、B响应中断的速度都非常快,中断处理时间很短,
+    但若B是慢速总线 gpio扩展,需要慢速总线读取IRQ的状态,无法在禁用IRQ的状态下快速的处理,影响系统响应速度,
+    所以需要在线程中mask父IRQ request line,直到处理完成.子级的IRQ处理共用此线程处理.
     */
 	nested = irq_settings_is_nested_thread(desc);
 	if (nested) {
@@ -1192,9 +1196,12 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 		 */
 		new->handler = irq_nested_primary_handler;
 	} else {
-        /*检测中断是否可以线程化<从硬件层面来看 如timer时钟中断就不能中断线程化>*/
+		/*
+		强制中断线程化处理:并非所有的中断能够中断线程化的
+		<从硬件层面来看 如timer时钟中断就不能中断线程化>
+		*/
 		if (irq_settings_can_thread(desc)) {
-			ret = irq_setup_forced_threading(new);
+			ret = irq_setup_forced_threading(new); //????
 			if (ret)
 				goto out_mput;
 		}
@@ -1205,7 +1212,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * and the interrupt does not nest into another interrupt
 	 * thread.
 	 */
-    /*非嵌套的线程化中断创建线程*/
+    /*非nested的线程化中断创建线程*/
 	if (new->thread_fn && !nested) {
 		ret = setup_irq_thread(new, irq, false); //一级线程
 		if (ret)
@@ -1245,7 +1252,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	chip_bus_lock(desc);
 
 	/* First installed action requests resources. */
-    /*首次安装action需进行一些初始化*/
+    /*首次安装action需进行一些初始化:如设置gpio为中断引脚*/
 	if (!desc->action) {
 		ret = irq_request_resources(desc);
 		if (ret) {
@@ -1261,6 +1268,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * management calls which are not serialized via
 	 * desc->request_mutex or the optional bus lock.
 	 */
+	/*共享中断action处理*/
 	raw_spin_lock_irqsave(&desc->lock, flags);
 	old_ptr = &desc->action;
 	old = *old_ptr;
@@ -1278,6 +1286,12 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 		 * If nobody did set the configuration before, inherit
 		 * the one provided by the requester.
 		 */
+		/*
+		共享中断两者需要以下条件一致才能共享:
+		1)都设置了IRQF_SHARED
+		2)中断的触发方式是一样的(电平、边沿、eoi)
+		3)要么都是IRQF_ONESHOT或者IRQF_PERCPU,要么都不是(即ONESHOT/PERCPU属性需要一致)
+		*/
 		if (irqd_trigger_type_was_set(&desc->irq_data)) {
 			oldtype = irqd_get_trigger_type(&desc->irq_data);
 		} else {
@@ -1296,6 +1310,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 			goto mismatch;
 
 		/* add new interrupt at end of irq queue */
+		/*b2.new action加入到irq action list尾*/
 		do {
 			/*
 			 * Or all existing action->thread_mask bits,
@@ -1373,9 +1388,11 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	}
 
 	if (!shared) {
+		/*非共享中断处理*/
 		init_waitqueue_head(&desc->wait_for_threads);
 
 		/* Setup the type (level, edge polarity) if configured: */
+		/*b1.设置触发方式*/
 		if (new->flags & IRQF_TRIGGER_MASK) {
 			ret = __irq_set_trigger(desc,
 						new->flags & IRQF_TRIGGER_MASK);
@@ -1384,10 +1401,12 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 				goto out_unlock;
 		}
 
+		/*清除状态*/
 		desc->istate &= ~(IRQS_AUTODETECT | IRQS_SPURIOUS_DISABLED | \
 				  IRQS_ONESHOT | IRQS_WAITING);
 		irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
 
+		/*设置中断属性(PERCPU/ONESHOT/NOBALANCING/)*/
 		if (new->flags & IRQF_PERCPU) {
 			irqd_set(&desc->irq_data, IRQD_PER_CPU);
 			irq_settings_set_per_cpu(desc);
@@ -1402,8 +1421,9 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 			irqd_set(&desc->irq_data, IRQD_NO_BALANCING);
 		}
 
+		/*自动检测irq处理*/
 		if (irq_settings_can_autoenable(desc)) {
-			irq_startup(desc, IRQ_RESEND, IRQ_START_COND);
+			irq_startup(desc, IRQ_RESEND, IRQ_START_COND); //????
 		} else {
 			/*
 			 * Shared interrupts do not go well with disabling
@@ -1454,11 +1474,13 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 	 * Strictly no need to wake it up, but hung_task complains
 	 * when no hard interrupt wakes the thread up.
 	 */
+	/*唤醒中断线程*/ 
 	if (new->thread)
 		wake_up_process(new->thread);
 	if (new->secondary)
 		wake_up_process(new->secondary->thread);
 
+	/*注册到/proc文件系统中*/
 	register_irq_proc(irq, desc);
 	irq_add_debugfs_entry(irq, desc);
 	new->dir = NULL;
@@ -1805,7 +1827,7 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 		return -EINVAL;
     /*
     _IRQ_NOREQUEST表示不能请求中断:对于级联的中断控制器,若中断控制器某个中断用于中转(级联), 
-    即意味着此中断对用户是不可见的,自然而然就不能申请中断 
+    即意味着此中断对用户是不可见的,自然而然就不能申请中断,但此中断仍然会有hander,用于irq映射
     _IRQ_PER_CPU_DEVID:表示中断是PER_CPU私有的,即私有外设中断(PPI),如本地时钟,用户不可申请.
     */
 	if (!irq_settings_can_request(desc) ||
