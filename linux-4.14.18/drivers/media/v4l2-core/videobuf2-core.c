@@ -662,8 +662,8 @@ int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 		return -EBUSY;
 	}
     
-    /*count==0,video buffer的数量,内存类型不一致释放之前,重新分配*/
-	if (*count == 0 || q->num_buffe之前,重新分配rs != 0 || q->memory != memory) {
+    /*count==0,video buffer的数量,内存类型不一致释放后再重新分配*/
+	if (*count == 0 || q->num_buffers != 0 || q->memory != memory) {
 		/*
 		 * We already have buffers allocated, so first check if they
 		 * are not in use and can be freed.
@@ -2161,6 +2161,15 @@ struct vb2_fileio_data {
  * @q:		videobuf2 queue
  * @read:	mode selector (1 means read, 0 means write)
  */
+/*
+对于fileio流程:
+vb2_core_reqbufs
+    get kernel address of each buffer:相当于mmap
+[vb2_core_qbuf]
+vb2_core_streamon
+注意事项:
+fileio默认io_mode是mmap,不支持multiplane buffers.
+*/
 static int __vb2_init_fileio(struct vb2_queue *q, int read)
 {
 	struct vb2_fileio_data *fileio;
@@ -2177,7 +2186,7 @@ static int __vb2_init_fileio(struct vb2_queue *q, int read)
 	/*
 	 * Check if device supports mapping buffers to kernel virtual space.
 	 */
-	if (!q->mem_ops->vaddr)
+	if (!q->mem_ops->vaddr) //file io方式buffer对用户可见的方式默认为mmap
 		return -EBUSY;
 
 	/*
@@ -2189,7 +2198,7 @@ static int __vb2_init_fileio(struct vb2_queue *q, int read)
 	/*
 	 * Start with count 1, driver can increase it in queue_setup()
 	 */
-	count = 1;
+	count = 1; //开始时分配buffer数目为1,等queue_setup重新调整
 
 	dprintk(3, "setting up file io: mode %s, count %d, read_once %d, write_immediately %d\n",
 		(read) ? "read" : "write", count, q->fileio_read_once,
@@ -2207,10 +2216,10 @@ static int __vb2_init_fileio(struct vb2_queue *q, int read)
 	 * to allocate buffers by itself.
 	 */
 	fileio->count = count;
-	fileio->memory = VB2_MEMORY_MMAP;
+	fileio->memory = VB2_MEMORY_MMAP;//分配的内存对用户可见的方式
 	fileio->type = q->type;
 	q->fileio = fileio;
-	ret = vb2_core_reqbufs(q, fileio->memory, &fileio->count);
+	ret = vb2_core_reqbufs(q, fileio->memory, &fileio->count); //分配buffer
 	if (ret)
 		goto err_kfree;
 
@@ -2218,7 +2227,7 @@ static int __vb2_init_fileio(struct vb2_queue *q, int read)
 	 * Check if plane_count is correct
 	 * (multiplane buffers are not supported).
 	 */
-	if (q->bufs[0]->num_planes != 1) {
+	if (q->bufs[0]->num_planes != 1) { //file io方式不支持multiplane buffers
 		ret = -EBUSY;
 		goto err_reqbufs;
 	}
@@ -2267,7 +2276,7 @@ static int __vb2_init_fileio(struct vb2_queue *q, int read)
 
 err_reqbufs:
 	fileio->count = 0;
-	vb2_core_reqbufs(q, fileio->memory, &fileio->count);
+	vb2_core_reqbufs(q, fileio->memory, &fileio->count); //释放分配的buffer
 
 err_kfree:
 	q->fileio = NULL;
