@@ -650,6 +650,15 @@ int vb2_verify_memory_type(struct vb2_queue *q,
 }
 EXPORT_SYMBOL(vb2_verify_memory_type);
 
+/*
+分配主要流程: 
+1)ops->queue_setup (询问driver是否支持num_buffers分配与planes的个数)
+2)memory == VB2_MEMORY_MMAP (分配planes)
+{ 
+ mem_ops->alloc
+ mem_ops->buf_init
+}
+*/
 int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 		unsigned int *count)
 {
@@ -662,7 +671,10 @@ int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 		return -EBUSY;
 	}
     
-    /*count==0,video buffer的数量,内存类型不一致释放后再重新分配*/
+    /* 
+     count==0时释放所有的buffer
+     video buffer的数量,内存类型不一致需先释放再重新分配
+    */
 	if (*count == 0 || q->num_buffers != 0 || q->memory != memory) {
 		/*
 		 * We already have buffers allocated, so first check if they
@@ -697,6 +709,9 @@ int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 	/*
 	 * Make sure the requested values and current defaults are sane.
 	 */
+    /*
+    num_buffers 取值范围[min_buffers_needed,VB2_MAX_FRAME]
+    */
 	num_buffers = min_t(unsigned int, *count, VB2_MAX_FRAME);
 	num_buffers = max_t(unsigned int, num_buffers, q->min_buffers_needed);
 	memset(q->alloc_devs, 0, sizeof(q->alloc_devs));
@@ -706,6 +721,7 @@ int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 	 * Ask the driver how many buffers and planes per buffer it requires.
 	 * Driver also sets the size and allocator context for each plane.
 	 */
+    /*询问驱动queue中有多少buffer与planes可用*/
 	ret = call_qop(q, queue_setup, q, &num_buffers, &num_planes,
 		       plane_sizes, q->alloc_devs);
 	if (ret)
@@ -729,6 +745,13 @@ int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 	/*
 	 * Check if driver can handle the allocated number of buffers.
 	 */
+    /*
+    buffer是通过kzalloc分配的,__vb2_queue_alloc可能还需要分配planes. 
+    allocated_buffers < num_buffers情况分为: 
+         1)系统没有内存 
+         2)分配/初始化planes内存失败
+    故此情况ops->queue_setup(driver)一般忽略.
+    */
 	if (!ret && allocated_buffers < num_buffers) {
 		num_buffers = allocated_buffers;
 		/*
@@ -1362,6 +1385,37 @@ static int vb2_start_streaming(struct vb2_queue *q)
 	return ret;
 }
 
+/*
+qbuf主要流程: 
+1) 
+a.mmap 
+    [q->buf_ops->fill_vb2_buffer] 
+    q->ops->buf_prepare
+b.userptr 
+    [q->buf_ops->fill_vb2_buffer]
+    {存在数据
+        q->op->buf_cleanup
+        q->mem_ops->put_userptr
+    }
+    q->mem_ops->get_userptr
+    q->ops->buf_init (首次)
+    q->ops->buf_prepare
+c.dmabuf 
+     [q->buf_ops->fill_vb2_buffer]
+     { 存在数据
+        q->op->buf_cleanup
+        q->mem_ops->unmap_dmabuf
+        q->mem_ops->detach_dmabuf
+     }
+     q->mem_ops->attach_dmabuf
+     q->mem_ops->map_dmabuf
+     q->ops->buf_init (首次)
+     q->ops->buf_prepare
+2) [q->buf_ops->copy_timestamp] pb为v4l2_buffer 
+3) q->ops->buf_queue 
+4)[q->buf_ops->fill_user_buffer] 
+5) [ q->ops->start_streaming]
+*/
 int vb2_core_qbuf(struct vb2_queue *q, unsigned int index, void *pb)
 {
 	struct vb2_buffer *vb;
@@ -2312,6 +2366,13 @@ static int __vb2_cleanup_fileio(struct vb2_queue *q)
  * @nonblock:	mode selector (1 means blocking calls, 0 means nonblocking)
  * @read:	access mode selector (1 means read, 0 means write)
  */
+/*
+buffer queue与dequeu策略:
+1)读 一开始所有的可用buffer立即入队(_vb2_init_fileio),在__vb2_perform_fileio只需循环dequeue/queue buffer.
+2)写 一开始时可用buffer都没有入队,只有当所有可用buffer都入队时,__vb2_perform_fileio才会开始dqueue/queue buffer循环操作
+<initial_index 正是为此设计,记录首次所有可用buffer入队时buffer的索引>
+总而言之:只有所有可用buffer第一次入队都完成后才有dequeue/queue循环操作
+*/
 static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_t count,
 		loff_t *ppos, int nonblock, int read)
 {
@@ -2337,7 +2398,7 @@ static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_
 	/*
 	 * Initialize emulator on first call.
 	 */
-	if (!vb2_fileio_is_active(q)) {
+	if (!vb2_fileio_is_active(q)) { //第一次调用分配buffer
 		ret = __vb2_init_fileio(q, read);
 		dprintk(3, "vb2_init_fileio result: %d\n", ret);
 		if (ret)
@@ -2348,6 +2409,11 @@ static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_
 	/*
 	 * Check if we need to dequeue the buffer.
 	 */
+    /* 
+      当没有空闲buffer时,dequeue buffer.
+      1)读 初始化时cur_index=num_buffers,所以第一次读时会dequeue buffer.
+      2)写 初始化时cur_index=0,所以第一次写时queue当前空闲buffer
+    */
 	index = fileio->cur_index;
 	if (index >= q->num_buffers) {
 		struct vb2_buffer *b;
@@ -2395,6 +2461,7 @@ static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_
 	 */
 	dprintk(3, "copying %zd bytes - buffer %d, offset %u\n",
 		count, index, buf->pos);
+    /*用户空间与kernel空间传输数据 pos记录当前传输数据的位置 相当于file的pos*/
 	if (read)
 		ret = copy_to_user(data, buf->vaddr + buf->pos, count);
 	else
@@ -2413,6 +2480,11 @@ static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_
 	/*
 	 * Queue next buffer if required.
 	 */
+    /* 
+    以下情况queue buffer: 
+    1)当用户空间与kernel空间数据传输完成 
+    2)立即写
+    */
 	if (buf->pos == buf->size || (!read && fileio->write_immediately)) {
 		struct vb2_buffer *b = q->bufs[index];
 
@@ -2427,7 +2499,7 @@ static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_
 		/*
 		 * Call vb2_qbuf and give buffer to the driver.
 		 */
-		b->planes[0].bytesused = buf->pos;
+		b->planes[0].bytesused = buf->pos; //告知驱动已完成多少数据传输
 
 		if (copy_timestamp)
 			b->timestamp = ktime_get_ns();
@@ -2447,6 +2519,10 @@ static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_
 		 * If we are queuing up buffers for the first time, then
 		 * increase initial_index by one.
 		 */
+        /*
+        1)读 初始化initial_index=num_buffers,所以传输完成后queue下一个buffer.
+        2)写 初始化initial_index=0,所以要等所有空闲buffer完成第一次queue之后才能dequeue.
+        */
 		if (fileio->initial_index < q->num_buffers)
 			fileio->initial_index++;
 		/*
