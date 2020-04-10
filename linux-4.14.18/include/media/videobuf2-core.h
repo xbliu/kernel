@@ -515,8 +515,24 @@ struct vb2_queue {
 	struct mutex			*lock;
 	void				*owner;
 
+	/*
+	buffer层面的操作
+	*/
 	const struct vb2_ops		*ops;
+	/*
+	planes层面的操作
+	 * .. note::
+ *    #) Required ops for USERPTR types: get_userptr, put_userptr.
+ *
+ *    #) Required ops for MMAP types: alloc, put, num_users, mmap.
+ *
+ *    #) Required ops for read/write access types: alloc, put, num_users, vaddr.
+ *
+ *    #) Required ops for DMABUF types: attach_dmabuf, detach_dmabuf,
+ *       map_dmabuf, unmap_dmabuf.
+	*/
 	const struct vb2_mem_ops	*mem_ops;
+	/*用户空间与内核空间信息交互(v4l2_buffer vb2_buffer)*/
 	const struct vb2_buf_ops	*buf_ops;
 
 	void				*drv_priv;

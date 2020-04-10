@@ -653,7 +653,9 @@ EXPORT_SYMBOL(vb2_verify_memory_type);
 /*
 分配主要流程: 
 1)ops->queue_setup (询问driver是否支持num_buffers分配与planes的个数)
-2)memory == VB2_MEMORY_MMAP (分配planes)
+2)
+a. kzalloc vb2_buffer
+b. memory == VB2_MEMORY_MMAP (分配planes)
 { 
  mem_ops->alloc
  mem_ops->buf_init
@@ -799,6 +801,10 @@ int vb2_core_reqbufs(struct vb2_queue *q, enum vb2_memory memory,
 }
 EXPORT_SYMBOL_GPL(vb2_core_reqbufs);
 
+/*
+vb2_core_create_bufs:在原有的基础上再创建多个buffer
+vb2_core_reqbufs:原有的先释放掉再分配所需buffer
+*/
 int vb2_core_create_bufs(struct vb2_queue *q, enum vb2_memory memory,
 		unsigned int *count, unsigned requested_planes,
 		const unsigned requested_sizes[])
@@ -907,6 +913,21 @@ void *vb2_plane_cookie(struct vb2_buffer *vb, unsigned int plane_no)
 }
 EXPORT_SYMBOL_GPL(vb2_plane_cookie);
 
+/*
+两个状态:vb2_buffer本身的状态与done完后的状态即vb->state state
+vb->state ==VB2_BUF_STATE_ACTIVE
+state 只能是以下情况之一,否则强制VB2_BUF_STATE_ERROR
+{
+VB2_BUF_STATE_DONE
+VB2_BUF_STATE_ERROR
+VB2_BUF_STATE_QUEUED
+VB2_BUF_STATE_REQUEUEING
+}
+
+VB2_BUF_STATE_REQUEUEING:重新入队
+VB2_BUF_STATE_QUEUED:vb->state=VB2_BUF_STATE_QUEUED
+<start_stream失败>
+*/
 void vb2_buffer_done(struct vb2_buffer *vb, enum vb2_buffer_state state)
 {
 	struct vb2_queue *q = vb->vb2_queue;
@@ -937,6 +958,7 @@ void vb2_buffer_done(struct vb2_buffer *vb, enum vb2_buffer_state state)
 		call_void_memop(vb, finish, vb->planes[plane].mem_priv);
 
 	spin_lock_irqsave(&q->done_lock, flags);
+	/*更改状态*/
 	if (state == VB2_BUF_STATE_QUEUED ||
 	    state == VB2_BUF_STATE_REQUEUEING) {
 		vb->state = VB2_BUF_STATE_QUEUED;
@@ -951,7 +973,7 @@ void vb2_buffer_done(struct vb2_buffer *vb, enum vb2_buffer_state state)
 	trace_vb2_buf_done(q, vb);
 
 	switch (state) {
-	case VB2_BUF_STATE_QUEUED:
+	case VB2_BUF_STATE_QUEUED: //vb2_buffer __enqueue_in_driver时并没有从queued_entry移除,故只需更改state即可.
 		return;
 	case VB2_BUF_STATE_REQUEUEING:
 		if (q->start_streaming_called)
@@ -1342,10 +1364,12 @@ static int vb2_start_streaming(struct vb2_queue *q)
 	 * If any buffers were queued before streamon,
 	 * we can now pass them to driver for processing.
 	 */
+	/*将所有可用buffer加入到驱动队列*/
 	list_for_each_entry(vb, &q->queued_list, queued_entry)
 		__enqueue_in_driver(vb);
 
 	/* Tell the driver to start streaming */
+	/*启动硬件开始工作*/	
 	q->start_streaming_called = 1;
 	ret = call_qop(q, start_streaming, q,
 		       atomic_read(&q->owned_by_drv_count));
@@ -1387,13 +1411,13 @@ static int vb2_start_streaming(struct vb2_queue *q)
 
 /*
 qbuf主要流程: 
-1) 
+1) __buf_prepare
 a.mmap 
     [q->buf_ops->fill_vb2_buffer] 
     q->ops->buf_prepare
 b.userptr 
     [q->buf_ops->fill_vb2_buffer]
-    {存在数据
+    {存在数据跟用户层的buf不一样(大小与地址)
         q->op->buf_cleanup
         q->mem_ops->put_userptr
     }
@@ -1402,7 +1426,7 @@ b.userptr
     q->ops->buf_prepare
 c.dmabuf 
      [q->buf_ops->fill_vb2_buffer]
-     { 存在数据
+     { 存在数据跟用户层的buf不一样(大小与地址)
         q->op->buf_cleanup
         q->mem_ops->unmap_dmabuf
         q->mem_ops->detach_dmabuf
@@ -1411,6 +1435,7 @@ c.dmabuf
      q->mem_ops->map_dmabuf
      q->ops->buf_init (首次)
      q->ops->buf_prepare
+ q->mem_ops->prepare //sync buffers    
 2) [q->buf_ops->copy_timestamp] pb为v4l2_buffer 
 3) q->ops->buf_queue 
 4)[q->buf_ops->fill_user_buffer] 
@@ -1632,6 +1657,16 @@ static void __vb2_dqbuf(struct vb2_buffer *vb)
 		}
 }
 
+/*
+主体流程:
+1)wait don_list不为空
+2)q->ops->buf_finish
+3)[q->buf_ops->fill_user_buffer]
+4)memory == VB2_MEMORY_DMABUF
+{
+q->mem_ops->unmap_dmabuf
+}
+*/
 int vb2_core_dqbuf(struct vb2_queue *q, unsigned int *pindex, void *pb,
 		   bool nonblocking)
 {
@@ -1967,6 +2002,7 @@ int vb2_mmap(struct vb2_queue *q, struct vm_area_struct *vma)
 	/*
 	 * Find the plane corresponding to the offset passed by userspace.
 	 */
+	 /*根椐offset查找相应的buffer的plane索引*/
 	ret = __find_plane_by_offset(q, off, &buffer, &plane);
 	if (ret)
 		return ret;
@@ -1978,7 +2014,7 @@ int vb2_mmap(struct vb2_queue *q, struct vm_area_struct *vma)
 	 * The buffer length was page_aligned at __vb2_buf_mem_alloc(),
 	 * so, we need to do the same here.
 	 */
-	length = PAGE_ALIGN(vb->planes[plane].length);
+	length = PAGE_ALIGN(vb->planes[plane].length); //可以映射plane的一段,但不能超过其长度
 	if (length < (vma->vm_end - vma->vm_start)) {
 		dprintk(1,
 			"MMAP invalid, as it would overflow buffer length\n");
@@ -2073,6 +2109,7 @@ void vb2_core_queue_release(struct vb2_queue *q)
 }
 EXPORT_SYMBOL_GPL(vb2_core_queue_release);
 
+/*若streaming API没有使用则默认开启read/write access模式*/
 unsigned int vb2_core_poll(struct vb2_queue *q, struct file *file,
 		poll_table *wait)
 {
@@ -2137,7 +2174,7 @@ unsigned int vb2_core_poll(struct vb2_queue *q, struct file *file,
 		if (q->last_buffer_dequeued)
 			return POLLIN | POLLRDNORM;
 
-		poll_wait(file, &q->done_wq, wait);
+		poll_wait(file, &q->done_wq, wait); //每次数据传输完成时vb2_buffer_done中wakeup q->done_wq.
 	}
 
 	/*
@@ -2441,7 +2478,7 @@ static size_t __vb2_perform_fileio(struct vb2_queue *q, char __user *data, size_
 		/* Compensate for data_offset on read in the multiplanar case. */
 		if (is_multiplanar && read &&
 				b->planes[0].data_offset < buf->size) {
-			buf->pos = b->planes[0].data_offset;
+			buf->pos = b->planes[0].data_offset; /*通常为0,但若data含有头部数据则不为0*/
 			buf->size -= buf->pos;
 		}
 	} else {
