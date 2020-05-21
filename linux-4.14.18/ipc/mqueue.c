@@ -120,11 +120,16 @@ static struct ipc_namespace *get_ns_from_inode(struct inode *inode)
 }
 
 /* Auxiliary functions to manipulate messages' list */
+/*
+1.以红黑树来组织消息优先级,即用红黑树的结点表示消息优先级 
+2.同优先级的消息添加到叶子结点的消息列表中,先进先出
+*/
 static int msg_insert(struct msg_msg *msg, struct mqueue_inode_info *info)
 {
 	struct rb_node **p, *parent = NULL;
 	struct posix_msg_tree_node *leaf;
 
+    /*1.搜索相应优先级的叶子结点*/
 	p = &info->msg_tree.rb_node;
 	while (*p) {
 		parent = *p;
@@ -137,6 +142,7 @@ static int msg_insert(struct msg_msg *msg, struct mqueue_inode_info *info)
 		else
 			p = &(*p)->rb_right;
 	}
+    /*2.对应优先级的叶子结点不存在,则分配*/
 	if (info->node_cache) {
 		leaf = info->node_cache;
 		info->node_cache = NULL;
@@ -146,10 +152,12 @@ static int msg_insert(struct msg_msg *msg, struct mqueue_inode_info *info)
 			return -ENOMEM;
 		INIT_LIST_HEAD(&leaf->msg_list);
 	}
+    /*3.叶子加入到红黑树中*/
 	leaf->priority = msg->m_type;
 	rb_link_node(&leaf->rb_node, parent, p);
 	rb_insert_color(&leaf->rb_node, &info->msg_tree);
 insert_msg:
+    /*4.消息加入到叶子结点的消息列表尾部*/
 	info->attr.mq_curmsgs++;
 	info->qsize += msg->m_ts;
 	list_add_tail(&msg->m_list, &leaf->msg_list);
@@ -163,6 +171,7 @@ static inline struct msg_msg *msg_get(struct mqueue_inode_info *info)
 	struct msg_msg *msg;
 
 try_again:
+    /*1.找到优先级最高的叶子结点*/
 	p = &info->msg_tree.rb_node;
 	while (*p) {
 		parent = *p;
@@ -195,6 +204,7 @@ try_again:
 		}
 		goto try_again;
 	} else {
+        /*2.从叶子结点中取第一个消息*/
 		msg = list_first_entry(&leaf->msg_list,
 				       struct msg_msg, m_list);
 		list_del(&msg->m_list);
@@ -207,6 +217,7 @@ try_again:
 			}
 		}
 	}
+    /*3.调整相应消息数与消息的大小*/
 	info->attr.mq_curmsgs--;
 	info->qsize -= msg->m_ts;
 	return msg;
@@ -544,7 +555,9 @@ static void wq_add(struct mqueue_inode_info *info, int sr,
 	struct ext_wait_queue *walk;
 
 	ewp->task = current;
-
+    /*
+    进程优先级值越小优先级越高:优先级高的排在队列前面
+    */
 	list_for_each_entry(walk, &info->e_wait_q[sr].list, list) {
 		if (walk->task->static_prio <= current->static_prio) {
 			list_add_tail(&ewp->list, &walk->list);
@@ -623,6 +636,10 @@ static inline void set_cookie(struct sk_buff *skb, char code)
 /*
  * The next function is only to split too long sys_mq_timedsend
  */
+/*
+notify: 
+  只有在消息从empty到not empty时才通知用户空间,通知完后清除notify.
+*/
 static void __do_notify(struct mqueue_inode_info *info)
 {
 	/* notification
@@ -1011,6 +1028,7 @@ static int do_mq_timedsend(mqd_t mqdes, const char __user *u_msg_ptr,
 
 	/* First try to allocate memory, before doing anything with
 	 * existing queues. */
+    /*1.分配内存存储消息*/
 	msg_ptr = load_msg(u_msg_ptr, msg_len);
 	if (IS_ERR(msg_ptr)) {
 		ret = PTR_ERR(msg_ptr);
@@ -1037,7 +1055,14 @@ static int do_mq_timedsend(mqd_t mqdes, const char __user *u_msg_ptr,
 	} else {
 		kfree(new_leaf);
 	}
-
+    /*
+    1.消息队列满: 
+        a.非阻塞返回再次尝试
+        b.阻塞等待新的空间可用
+    2.消息队列未满: 
+        a.有接收者等待直接发送给第一个接收者
+        b.没有接收者 直接插入到消息队列
+    */
 	if (info->attr.mq_curmsgs == info->attr.mq_maxmsg) {
 		if (f.file->f_flags & O_NONBLOCK) {
 			ret = -EAGAIN;
@@ -1118,6 +1143,7 @@ static int do_mq_timedreceive(mqd_t mqdes, char __user *u_msg_ptr,
 	}
 
 	/* checks if buffer is big enough */
+    /*消息的存储空间应大于消息的最大长度*/
 	if (unlikely(msg_len < info->attr.mq_msgsize)) {
 		ret = -EMSGSIZE;
 		goto out_fput;
@@ -1141,6 +1167,15 @@ static int do_mq_timedreceive(mqd_t mqdes, char __user *u_msg_ptr,
 		kfree(new_leaf);
 	}
 
+    /*
+    1.消息队列为空: 
+        a.非阻塞直接返回-EAGAIN
+        b.阻塞 加入阻塞等待队列
+    2.消息队列不为空: 
+        1)从队列中取消息
+        2)若有阻塞等待sender,取第一个sender将其消息加入到消息队列,若无通知poll上的等待sender.
+        3)复制消息给用户空间
+    */
 	if (info->attr.mq_curmsgs == 0) {
 		if (f.file->f_flags & O_NONBLOCK) {
 			spin_unlock(&info->lock);
