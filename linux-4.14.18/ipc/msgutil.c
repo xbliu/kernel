@@ -45,13 +45,16 @@ struct msg_msgseg {
 #define DATALEN_MSG	((size_t)PAGE_SIZE-sizeof(struct msg_msg))
 #define DATALEN_SEG	((size_t)PAGE_SIZE-sizeof(struct msg_msgseg))
 
-
+/*
+以PAGE_SIZE大小为单位来存储数据.
+*/
 static struct msg_msg *alloc_msg(size_t len)
 {
 	struct msg_msg *msg;
 	struct msg_msgseg **pseg;
 	size_t alen;
 
+    /*1.分配第一个PAGE_SIZE存储数据*/
 	alen = min(len, DATALEN_MSG);
 	msg = kmalloc(sizeof(*msg) + alen, GFP_KERNEL_ACCOUNT);
 	if (msg == NULL)
@@ -60,6 +63,7 @@ static struct msg_msg *alloc_msg(size_t len)
 	msg->next = NULL;
 	msg->security = NULL;
 
+    /*2.若len > PAGE_SIZE,则分配多个PAGE_SIZE内存用来存储数据(即分配剩余所需内存)*/
 	len -= alen;
 	pseg = &msg->next;
 	while (len > 0) {
@@ -88,14 +92,17 @@ struct msg_msg *load_msg(const void __user *src, size_t len)
 	int err = -EFAULT;
 	size_t alen;
 
+    /*1.分配所需总内存*/
 	msg = alloc_msg(len);
 	if (msg == NULL)
 		return ERR_PTR(-ENOMEM);
 
+    /*2.复制第一个DATALEN_MSG大小的内容*/
 	alen = min(len, DATALEN_MSG);
 	if (copy_from_user(msg + 1, src, alen))
 		goto out_err;
 
+    /*3.复制剩余的内容*/
 	for (seg = msg->next; seg != NULL; seg = seg->next) {
 		len -= alen;
 		src = (char __user *)src + alen;
