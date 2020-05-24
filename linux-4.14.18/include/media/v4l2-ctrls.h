@@ -186,6 +186,7 @@ struct v4l2_ctrl {
 	struct list_head node;
 	struct list_head ev_subs;
 	struct v4l2_ctrl_handler *handler;
+	/*用于关联的v4l2_ctrl,如静音设置与音量设置*/
 	struct v4l2_ctrl **cluster;
 	unsigned int ncontrols;
 
@@ -205,10 +206,13 @@ struct v4l2_ctrl {
 
 	const struct v4l2_ctrl_ops *ops;
 	const struct v4l2_ctrl_type_ops *type_ops;
+	/*同一类型控制用ID区分*/
 	u32 id;
 	const char *name;
 	enum v4l2_ctrl_type type;
+	/*控制选项值一般有范围*/
 	s64 minimum, maximum, default_value;
+	/*多维控制选项*/
 	u32 elems;
 	u32 elem_size;
 	u32 dims[V4L2_CTRL_MAX_DIMS];
@@ -217,6 +221,7 @@ struct v4l2_ctrl {
 		u64 step;
 		u64 menu_skip_mask;
 	};
+	/*字符型与整型菜单*/
 	union {
 		const char * const *qmenu;
 		const s64 *qmenu_int;

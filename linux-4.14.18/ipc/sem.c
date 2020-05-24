@@ -289,6 +289,7 @@ static void complexmode_enter(struct sem_array *sma)
 	}
 	sma->use_global_lock = USE_GLOBAL_LOCK_HYSTERESIS;
 
+	/*扫描每一个信号量,查看其锁是否占用*/
 	for (i = 0; i < sma->sem_nsems; i++) {
 		sem = &sma->sems[i];
 		spin_lock(&sem->lock);
@@ -329,17 +330,28 @@ static void complexmode_tryleave(struct sem_array *sma)
  * multiple semaphores in our own semops, or we need to look at
  * semaphores from other pending complex operations.
  */
+ /*
+ 信号量锁分为两种:
+ 1)锁住整个数组的全局锁---全局模式
+ 2)锁住单个信号量的局部锁---局部模式
+ 3)由于从局部锁切换到全局锁,代价巨大(需轮询每一个数组成员(sem)是否都可操作),所以增加了
+ 延迟锁(即全局锁模式结束后并不能立即切换到局部锁模式,而是等待一定次数后才能切换,避免频繁
+ 的从局部模式切换到全局模式)
+ */
 static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
 			      int nsops)
 {
 	struct sem *sem;
 
+	/*
+	*1)全局锁模式:操作整个数组(即多个sem)
+	*/
 	if (nsops != 1) {
 		/* Complex operation - acquire a full lock */
 		ipc_lock_object(&sma->sem_perm);
 
 		/* Prevent parallel simple ops */
-		complexmode_enter(sma);
+		complexmode_enter(sma); //进入全局锁模式
 		return SEM_GLOBAL_LOCK;
 	}
 
@@ -356,6 +368,9 @@ static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
 	 * Initial check for use_global_lock. Just an optimization,
 	 * no locking, no memory barrier.
 	 */
+	/*
+	2)单个sem操作且无并行的整个数组操作即局部模式与全局模式没有并行
+	*/ 
 	if (!sma->use_global_lock) {
 		/*
 		 * It appears that no complex operation is around.
@@ -372,8 +387,16 @@ static inline int sem_lock(struct sem_array *sma, struct sembuf *sops,
 	}
 
 	/* slow path: acquire the full lock */
+	/*
+	3)单个sem操作且有并行的整个数组操作:等待数组操作完成
+	即局部模式紧跟全局锁模式之后
+	*/
 	ipc_lock_object(&sma->sem_perm);
 
+	/*
+	4)单个sem操作获取整个数组锁以后,数组操完毕
+	局部模式紧跟延迟锁模式之后(生命周期已结束)
+	*/
 	if (sma->use_global_lock == 0) {
 		/*
 		 * The use_global_lock mode ended while we waited for
@@ -402,9 +425,9 @@ static inline void sem_unlock(struct sem_array *sma, int locknum)
 {
 	if (locknum == SEM_GLOBAL_LOCK) {
 		unmerge_queues(sma);
-		complexmode_tryleave(sma);
+		complexmode_tryleave(sma); //统计延迟锁模式生命周期
 		ipc_unlock_object(&sma->sem_perm);
-	} else {
+	} else { //局部锁模式释放相应锁即可.
 		struct sem *sem = &sma->sems[locknum];
 		spin_unlock(&sem->lock);
 	}
@@ -677,6 +700,7 @@ static int perform_atomic_semop(struct sem_array *sma, struct sem_queue *q)
 	nsops = q->nsops;
 	un = q->undo;
 
+	//有sem重复操作,慢速操作(失败时需退回原值)
 	if (unlikely(q->dupsop))
 		return perform_atomic_semop_slow(sma, q);
 
@@ -686,6 +710,11 @@ static int perform_atomic_semop(struct sem_array *sma, struct sem_queue *q)
 	 * to shared memory and having to undo such changes in order to block
 	 * until the operations can go through.
 	 */
+	/*
+	快速操作,扫描两遍:
+	1)第一遍操作:看此次所有sem操作是否有阻塞的情况,避免失败时回退
+	2)第二遍操作:修改所有操作sem的值
+	*/ 
 	for (sop = sops; sop < sops + nsops; sop++) {
 		curr = &sma->sems[sop->sem_num];
 		sem_op = sop->sem_op;
@@ -812,6 +841,7 @@ static int wake_const_ops(struct sem_array *sma, int semnum,
 	else
 		pending_list = &sma->sems[semnum].pending_const;
 
+	/*对全局等待队列或局部等待队列操作看是否等于0*/
 	list_for_each_entry_safe(q, tmp, pending_list, list) {
 		int error = perform_atomic_semop(sma, q);
 
@@ -931,6 +961,7 @@ again:
 		if (error) {
 			restart = 0;
 		} else {
+			/*semval==0 唤醒等待0的操作并检查是否需要重新扫描等待队列*/
 			semop_completed = 1;
 			do_smart_wakeup_zero(sma, q->sops, q->nsops, wake_q);
 			restart = check_restart(sma, q);
@@ -979,12 +1010,12 @@ static void do_smart_update(struct sem_array *sma, struct sembuf *sops, int nsop
 			    int otime, struct wake_q_head *wake_q)
 {
 	int i;
-
+	/*1.唤醒等待sem==0的操作*/
 	otime |= do_smart_wakeup_zero(sma, sops, nsops, wake_q);
 
 	if (!list_empty(&sma->pending_alter)) {
 		/* semaphore array uses the global queue - just process it. */
-		otime |= update_queue(sma, -1, wake_q);
+		otime |= update_queue(sma, -1, wake_q); //处理整个等待队列
 	} else {
 		if (!sops) {
 			/*
@@ -1003,7 +1034,7 @@ static void do_smart_update(struct sem_array *sma, struct sembuf *sops, int nsop
 			 *   previous value was too small, then the new
 			 *   value will be too small, too.
 			 */
-			for (i = 0; i < nsops; i++) {
+			for (i = 0; i < nsops; i++) { //处理单个sem的等待队列
 				if (sops[i].sem_op > 0) {
 					otime |= update_queue(sma,
 							      sops[i].sem_num, wake_q);
@@ -1897,6 +1928,7 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		jiffies_left = timespec64_to_jiffies(timeout);
 	}
 
+	/*mask 检测BITS_PER_LONG长度内重复的sem操作*/
 	max = 0;
 	for (sop = sops; sop < sops + nsops; sop++) {
 		unsigned long mask = 1ULL << ((sop->sem_num) % BITS_PER_LONG);
@@ -1905,7 +1937,7 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 			max = sop->sem_num;
 		if (sop->sem_flg & SEM_UNDO)
 			undos = true;
-		if (dup & mask) {
+		if (dup & mask) { //操作的位已置1说明重复操作
 			/*
 			 * There was a previous alter access that appears
 			 * to have accessed the same semaphore, thus use
@@ -1916,7 +1948,7 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		}
 		if (sop->sem_op != 0) {
 			alter = true;
-			dup |= mask;
+			dup |= mask; //要操作的置1
 		}
 	}
 
@@ -1958,6 +1990,12 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 	}
 
 	error = -EIDRM;
+	/*
+	三把锁:
+	sem_perm->lock:全局锁(锁定整个信号量数组)
+	sem.lock:局部锁(锁定数组中单个信号量成员)
+	use_global_lock:延迟全局锁模式切换到局部锁模式
+	*/
 	locknum = sem_lock(sma, sops, nsops);
 	/*
 	 * We eventually might perform the following check in a lockless
@@ -1995,7 +2033,7 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		 * the required updates.
 		 */
 		if (alter)
-			do_smart_update(sma, sops, nsops, 1, &wake_q);
+			do_smart_update(sma, sops, nsops, 1, &wake_q); //成功操作唤醒等待的队列
 		else
 			set_semotime(sma, sops);
 
@@ -2012,12 +2050,20 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 	 * We need to sleep on this operation, so we put the current
 	 * task into the pending queue and go to sleep.
 	 */
+	/*
+	nsops==1表示只有一个信号量处理
+	*/ 
 	if (nsops == 1) {
 		struct sem *curr;
 		curr = &sma->sems[sops->sem_num];
 
+		/*
+		等待队列分两种:
+		a.不修改的等待:等待信号量为0
+		b.修改的等待:信号量值改变>=1
+		*/
 		if (alter) {
-			if (sma->complex_count) {
+			if (sma->complex_count) { //全局锁模式下等待队列加入到全局pending_alter
 				list_add_tail(&queue.list,
 						&sma->pending_alter);
 			} else {
@@ -2029,7 +2075,14 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
 			list_add_tail(&queue.list, &curr->pending_const);
 		}
 	} else {
-		if (!sma->complex_count)
+		/*
+		从局部锁模式切换到全局锁模式:
+			当多个sem操作即将睡眠时合并所有队列是单个sem操作实现先进先出的必要条件
+			对于单个sem的pending_alter队列来说是先进先出,多个sem操作可能包含已有peng_alter的sem,
+			要保证sem的pending_alter要早于sma的pending_alter,需在睡眠之前将所有的sem pendging_alter
+			合并,sma wait_queue加入到其后.
+		*/
+		if (!sma->complex_count) 
 			merge_queues(sma);
 
 		if (alter)

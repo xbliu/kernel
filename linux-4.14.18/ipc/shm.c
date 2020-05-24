@@ -586,6 +586,10 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 		if  ((shmflg & SHM_NORESERVE) &&
 				sysctl_overcommit_memory != OVERCOMMIT_NEVER)
 			acctflag = VM_NORESERVE;
+		/*
+		1.在shm_mnt下创建文件inode(path-->dentry-->d_inode)
+		2.分配file 关联此inode
+		*/
 		file = shmem_kernel_file_setup(name, size, acctflag);
 	}
 	error = PTR_ERR(file);

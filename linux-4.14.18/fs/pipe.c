@@ -247,6 +247,13 @@ static const struct pipe_buf_operations packet_pipe_buf_ops = {
 	.get = generic_pipe_buf_get,
 };
 
+/*
+1)读完之后的buf page,缓存到tmp_page,留待下一次
+2)没有写者的情况下,当没有可用缓存区可读时返回0
+3)没有缓冲区可读且没有等待的写者的情况下:
+a.非阻塞直接返回
+b.阻塞情况阻塞等待写者写
+*/
 static ssize_t
 pipe_read(struct kiocb *iocb, struct iov_iter *to)
 {
@@ -299,8 +306,7 @@ pipe_read(struct kiocb *iocb, struct iov_iter *to)
 			}
 
 			if (!buf->len) {
-				pipe_buf_release(pipe, buf);
-				curbuf = (curbuf + 1) & (pipe->buffers - 1);
+				pipe_buf_release(pipe, buf); //page引用计数为1时,缓存到tmp_page,下一次继续使用				curbuf = (curbuf + 1) & (pipe->buffers - 1);
 				pipe->curbuf = curbuf;
 				pipe->nrbufs = --bufs;
 				do_wakeup = 1;
@@ -311,7 +317,7 @@ pipe_read(struct kiocb *iocb, struct iov_iter *to)
 		}
 		if (bufs)	/* More to do? */
 			continue;
-		if (!pipe->writers)
+		if (!pipe->writers) //没有写者直接返回
 			break;
 		if (!pipe->waiting_writers) {
 			/* syscall merging: Usually we must not sleep
@@ -335,7 +341,7 @@ pipe_read(struct kiocb *iocb, struct iov_iter *to)
 			wake_up_interruptible_sync_poll(&pipe->wait, POLLOUT | POLLWRNORM);
  			kill_fasync(&pipe->fasync_writers, SIGIO, POLL_OUT);
 		}
-		pipe_wait(pipe);
+		pipe_wait(pipe); //没有数据睡眠等待<写者数目不为0>
 	}
 	__pipe_unlock(pipe);
 
@@ -354,6 +360,15 @@ static inline int is_packetized(struct file *file)
 	return (file->f_flags & O_DIRECT) != 0;
 }
 
+/*
+1)packet buf<直接写管道>与anon buf的区别是anon buf可以合并而packet buf不可以合并
+合并是指每次先合并写小于PAGE_SIZE的长度
+2)缓冲区写满时:
+a.阻塞的情况等待读者读取缓冲区
+b.非阻塞的情况直接返回
+3)在没有读者的情况下pipe_write直接返回EPIPE错误
+4)buf page不是一开始就分配好的,而是用到时才分配<延迟分配策略>
+*/
 static ssize_t
 pipe_write(struct kiocb *iocb, struct iov_iter *from)
 {
@@ -370,6 +385,7 @@ pipe_write(struct kiocb *iocb, struct iov_iter *from)
 
 	__pipe_lock(pipe);
 
+	//没有读者直接返回EPIPE错误.
 	if (!pipe->readers) {
 		send_sig(SIGPIPE, current, 0);
 		ret = -EPIPE;
@@ -377,6 +393,7 @@ pipe_write(struct kiocb *iocb, struct iov_iter *from)
 	}
 
 	/* We try to merge small writes */
+	//合并写小于PAGE_SIZE的长度
 	chars = total_len & (PAGE_SIZE-1); /* size of the last buffer */
 	if (pipe->nrbufs && chars != 0) {
 		int lastbuf = (pipe->curbuf + pipe->nrbufs - 1) &
@@ -457,6 +474,7 @@ pipe_write(struct kiocb *iocb, struct iov_iter *from)
 		}
 		if (bufs < pipe->buffers)
 			continue;
+		//写满缓冲区 非阻塞的情况下等一会再试
 		if (filp->f_flags & O_NONBLOCK) {
 			if (!ret)
 				ret = -EAGAIN;
@@ -472,6 +490,7 @@ pipe_write(struct kiocb *iocb, struct iov_iter *from)
 			kill_fasync(&pipe->fasync_readers, SIGIO, POLL_IN);
 			do_wakeup = 0;
 		}
+		/*写满缓冲区的阻塞的情况下等待读者消耗*/
 		pipe->waiting_writers++;
 		pipe_wait(pipe);
 		pipe->waiting_writers--;
@@ -884,9 +903,16 @@ static void wake_up_partner(struct pipe_inode_info *pipe)
 	wake_up_interruptible(&pipe->wait);
 }
 
+/*
+有名管道打开操作
+1)非pipe文件系统时 非阻塞情况下有名管道只读者要优先于只写者创建
+2)非pipe文件系统时 阻塞情况下有名管道只读者与只写者要等待彼此创建
+3)可读可写者创建时不阻塞
+*/
 static int fifo_open(struct inode *inode, struct file *filp)
 {
 	struct pipe_inode_info *pipe;
+	/*有名管道 指定的文件可以是pipe文件系统也可以不是*/
 	bool is_pipe = inode->i_sb->s_magic == PIPEFS_MAGIC;
 	int ret;
 
@@ -930,16 +956,16 @@ static int fifo_open(struct inode *inode, struct file *filp)
 	 *  opened, even when there is no process writing the FIFO.
 	 */
 		pipe->r_counter++;
-		if (pipe->readers++ == 0)
+		if (pipe->readers++ == 0) //第一个读者刚创建时唤醒所有等待的写者
 			wake_up_partner(pipe);
 
 		if (!is_pipe && !pipe->writers) {
-			if ((filp->f_flags & O_NONBLOCK)) {
+			if ((filp->f_flags & O_NONBLOCK)) { //非阻塞读直接返回
 				/* suppress POLLHUP until we have
 				 * seen a writer */
 				filp->f_version = pipe->w_counter;
 			} else {
-				if (wait_for_partner(pipe, &pipe->w_counter))
+				if (wait_for_partner(pipe, &pipe->w_counter)) //有名管道(非pipe文件系统)等待第一个写者创建
 					goto err_rd;
 			}
 		}
@@ -950,16 +976,17 @@ static int fifo_open(struct inode *inode, struct file *filp)
 	 *  O_WRONLY
 	 *  POSIX.1 says that O_NONBLOCK means return -1 with
 	 *  errno=ENXIO when there is no process reading the FIFO.
-	 */
+	 */	
+	 	//非pipe文件系统有名管道非阻塞的情况读者要先于写者打开,否则open时出错
 		ret = -ENXIO;
 		if (!is_pipe && (filp->f_flags & O_NONBLOCK) && !pipe->readers)
 			goto err;
 
 		pipe->w_counter++;
-		if (!pipe->writers++)
+		if (!pipe->writers++) //第一个写者刚创建时唤醒所有等待的读者
 			wake_up_partner(pipe);
 
-		if (!is_pipe && !pipe->readers) {
+		if (!is_pipe && !pipe->readers) { //有名管道(非pipe文件系统)等待第一个读者创建
 			if (wait_for_partner(pipe, &pipe->r_counter))
 				goto err_wr;
 		}
