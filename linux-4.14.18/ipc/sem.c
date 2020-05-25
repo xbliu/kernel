@@ -877,6 +877,7 @@ static int do_smart_wakeup_zero(struct sem_array *sma, struct sembuf *sops,
 	int got_zero = 0;
 
 	/* first: the per-semaphore queues, if known */
+    /*1.优先 wakeup单个sem 等待zero的任务*/
 	if (sops) {
 		for (i = 0; i < nsops; i++) {
 			int num = sops[i].sem_num;
@@ -902,6 +903,7 @@ static int do_smart_wakeup_zero(struct sem_array *sma, struct sembuf *sops,
 	 * If one of the modified semaphores got 0,
 	 * then check the global queue, too.
 	 */
+    /*2.检测到有单个sem的semval==0 试着wakeup全局常量队列*/
 	if (got_zero)
 		semop_completed |= wake_const_ops(sma, -1, wake_q);
 
@@ -1006,6 +1008,12 @@ static void set_semotime(struct sem_array *sma, struct sembuf *sops)
  * responsible for calling wake_up_q().
  * It is safe to perform this call after dropping all locks.
  */
+/*
+唤醒优先级:
+1)wakeup 等待semval==0
+2)wakeup sma的修改等待队列
+3)wakeup sem的修改等待队列
+*/
 static void do_smart_update(struct sem_array *sma, struct sembuf *sops, int nsops,
 			    int otime, struct wake_q_head *wake_q)
 {
@@ -1888,6 +1896,19 @@ out:
 	return un;
 }
 
+/*
+关键点: 
+1)两个等待队列pending_alter pending_const而不是一个 
+    一个队列即使semval!=0也要检测
+2)两个队列:全局队列与局部队列,为什么不是一个全局队列呢? 
+    一个全局队列 单个sem操作时也要获取全局锁
+    有局部队列只要获取该sem锁即可.
+3)simple operations / complex operations 
+简单操作:一次操作一个sem
+复杂操作:一次操作多个sem 
+4)undo 操作 
+  每个进程记录着sem的反向操作值,当(exit_sem)退出时将此值与当前值相加即可. 
+*/
 static long do_semtimedop(int semid, struct sembuf __user *tsops,
 		unsigned nsops, const struct timespec64 *timeout)
 {
