@@ -512,6 +512,7 @@ static int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
 					if (f_op->poll) {
 						wait_key_set(wait, in, out,
 							     bit, busy_flag);// 设置当前fd待监测的事件掩码
+                        //f_op->poll中调用poll_wait-->__pollwait,poll_initwait 中注册
 						mask = (*f_op->poll)(f.file, wait);
 					}
 					fdput(f);
