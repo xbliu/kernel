@@ -99,6 +99,7 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 	 * the fdarray into comfortable page-tuned chunks: starting at 1024B
 	 * and growing in powers of two from there on.
 	 */
+    /*以2的n次方的1024B为基础扩充fd的容量*/
 	nr /= (1024 / sizeof(struct file *));
 	nr = roundup_pow_of_two(nr + 1);
 	nr *= (1024 / sizeof(struct file *));
@@ -122,6 +123,12 @@ static struct fdtable * alloc_fdtable(unsigned int nr)
 		goto out_fdt;
 	fdt->fd = data;
 
+    /*
+    open_fds/close_on_exec用1 bit代表一个fd 
+    full_fds_bits用1 bits代表 1 byte open_fds/close_on_exec(BITS_PER_BYTE个fd). 
+    full_fds_bits用于按字节查找可用fd,open_fds用于按位查找可用fd. 
+    即建立分级查找,加速查找速度.
+    */
 	data = kvmalloc(max_t(size_t,
 				 2 * nr / BITS_PER_BYTE + BITBIT_SIZE(nr), L1_CACHE_BYTES),
 				 GFP_KERNEL_ACCOUNT);
@@ -178,7 +185,7 @@ static int expand_fdtable(struct files_struct *files, unsigned int nr)
 	}
 	cur_fdt = files_fdtable(files);
 	BUG_ON(nr < cur_fdt->max_fds);
-	copy_fdtable(new_fdt, cur_fdt);
+	copy_fdtable(new_fdt, cur_fdt); //迁移旧的fdt数据
 	rcu_assign_pointer(files->fdt, new_fdt);
 	if (cur_fdt != &files->fdtab)
 		call_rcu(&cur_fdt->rcu, free_fdtable_rcu);
@@ -222,11 +229,11 @@ repeat:
 	}
 
 	/* All good, so we try */
-	files->resize_in_progress = true;
+	files->resize_in_progress = true; //标记正在调整fd的容量中
 	expanded = expand_fdtable(files, nr);
 	files->resize_in_progress = false;
 
-	wake_up_all(&files->resize_wait);
+	wake_up_all(&files->resize_wait); //唤醒所有等待的进程
 	return expanded;
 }
 
@@ -243,9 +250,9 @@ static inline void __clear_close_on_exec(unsigned int fd, struct fdtable *fdt)
 
 static inline void __set_open_fd(unsigned int fd, struct fdtable *fdt)
 {
-	__set_bit(fd, fdt->open_fds);
+	__set_bit(fd, fdt->open_fds); //标记相应bit的fd已经分配出去
 	fd /= BITS_PER_LONG;
-	if (!~fdt->open_fds[fd])
+	if (!~fdt->open_fds[fd]) //表示相应byte的fd全部分配出去了
 		__set_bit(fd, fdt->full_fds_bits);
 }
 
@@ -492,6 +499,12 @@ int __alloc_fd(struct files_struct *files,
 repeat:
 	fdt = files_fdtable(files);
 	fd = start;
+    /*
+    从next_fd开始查找可用fd,并不代表next_fd可用. 
+        1)close fd时若fd < next_fd,则下一次next_fd为此(closed fd).
+        2)下一次open时,此(closed fd)分配出去.next_fd = (closed fd) + 1.
+        3)第二次连续open时next_fd = (closed fd) + 1,此next_fd不一定可用.因为有可能未释放
+    */
 	if (fd < files->next_fd)
 		fd = files->next_fd;
 
@@ -517,6 +530,7 @@ repeat:
 	if (error)
 		goto repeat;
 
+    /*更新下一次查找fd开始项*/
 	if (start <= files->next_fd)
 		files->next_fd = fd + 1;
 
@@ -554,7 +568,7 @@ static void __put_unused_fd(struct files_struct *files, unsigned int fd)
 {
 	struct fdtable *fdt = files_fdtable(files);
 	__clear_open_fd(fd, fdt);
-	if (fd < files->next_fd)
+	if (fd < files->next_fd) //更新新的查找fd起始位
 		files->next_fd = fd;
 }
 
@@ -637,9 +651,16 @@ int __close_fd(struct files_struct *files, unsigned fd)
 		goto out_unlock;
 	rcu_assign_pointer(fdt->fd[fd], NULL);
 
-    /*a4.清除close_on_exec位:为什么 ???*/
+    /*
+    a4.清除close_on_exec位 
+        表示execve执行时需将该描述符关闭,否则该描述符将始终处于打开状态.
+    */
 	__clear_close_on_exec(fd, fdt);
-    /*a5.标记fd为未使用,更新next_fd：这样下次再打开可以不用再查找*/
+    /* 
+    a5.标记fd为未使用,更新next_fd：这样下次打开时可以从此处查找
+      1)可以复用已关闭的fd,避免非必要的fd扩容
+      2)可以加速查找可用fd的速度
+    */
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
 
