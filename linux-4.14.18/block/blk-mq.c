@@ -1965,6 +1965,7 @@ static int blk_mq_init_hctx(struct request_queue *q,
 	if (node == NUMA_NO_NODE)
 		node = hctx->numa_node = set->numa_node;
 
+    /*1.run_work*/
 	INIT_DELAYED_WORK(&hctx->run_work, blk_mq_run_work_fn);
 	spin_lock_init(&hctx->lock);
 	INIT_LIST_HEAD(&hctx->dispatch);
@@ -1984,12 +1985,14 @@ static int blk_mq_init_hctx(struct request_queue *q,
 	if (!hctx->ctxs)
 		goto unregister_cpu_notifier;
 
+    /*2.ctx_map*/
 	if (sbitmap_init_node(&hctx->ctx_map, nr_cpu_ids, ilog2(8), GFP_KERNEL,
 			      node))
 		goto free_ctxs;
 
 	hctx->nr_ctx = 0;
 
+    /*3.init_hctx*/
 	if (set->ops->init_hctx &&
 	    set->ops->init_hctx(hctx, set->driver_data, hctx_idx))
 		goto free_bitmap;
@@ -1997,10 +2000,12 @@ static int blk_mq_init_hctx(struct request_queue *q,
 	if (blk_mq_sched_init_hctx(q, hctx, hctx_idx))
 		goto exit_hctx;
 
+    /*4.flush_queue*/
 	hctx->fq = blk_alloc_flush_queue(q, hctx->numa_node, set->cmd_size);
 	if (!hctx->fq)
 		goto sched_exit_hctx;
 
+    /*5.init_request*/
 	if (set->ops->init_request &&
 	    set->ops->init_request(set, hctx->fq->flush_rq, hctx_idx,
 				   node))
@@ -2315,7 +2320,7 @@ static void blk_mq_realloc_hw_ctxs(struct blk_mq_tag_set *set,
 
 		if (hctxs[i])
 			continue;
-
+        /*从最近的node中分配 blk_mq_hw_ctx*/
 		node = blk_mq_hw_queue_to_node(q->mq_map, i);
 		hctxs[i] = kzalloc_node(blk_mq_hw_ctx_size(set),
 					GFP_KERNEL, node);
@@ -2341,6 +2346,7 @@ static void blk_mq_realloc_hw_ctxs(struct blk_mq_tag_set *set,
 		}
 		blk_mq_hctx_kobj_init(hctxs[i]);
 	}
+    /*释放掉[i,q->nr_hw_queues]:只用set->nr_hw_queues个硬件队列*/
 	for (j = i; j < q->nr_hw_queues; j++) {
 		struct blk_mq_hw_ctx *hctx = hctxs[j];
 
@@ -2353,7 +2359,7 @@ static void blk_mq_realloc_hw_ctxs(struct blk_mq_tag_set *set,
 
 		}
 	}
-	q->nr_hw_queues = i;
+	q->nr_hw_queues = i; //更改队列硬件队列个数
 	blk_mq_sysfs_register(q);
 }
 
@@ -2369,6 +2375,7 @@ struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 	if (!q->poll_cb)
 		goto err_exit;
 
+    /*a1.分配软件上下文,一个cpu对应一个mq_ctx*/
 	q->queue_ctx = alloc_percpu(struct blk_mq_ctx);
 	if (!q->queue_ctx)
 		goto err_exit;
@@ -2383,7 +2390,8 @@ struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 
 	q->mq_map = set->mq_map;
 
-	blk_mq_realloc_hw_ctxs(set, q);
+    /*a2.分配硬件上下文*/
+	blk_mq_realloc_hw_ctxs(set, q); //queue_hw_ctx是指针,此处分配具体的硬件上下文
 	if (!q->nr_hw_queues)
 		goto err_hctxs;
 
@@ -2403,6 +2411,7 @@ struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 	INIT_LIST_HEAD(&q->requeue_list);
 	spin_lock_init(&q->requeue_lock);
 
+    /*a2.make request初始化*/
 	blk_queue_make_request(q, blk_mq_make_request);
 
 	/*
@@ -2420,8 +2429,10 @@ struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 
 	blk_mq_init_cpu_queues(q, set->nr_hw_queues);
 	blk_mq_add_queue_tag_set(set, q);
+    /*a3.映射软件队列到硬件队列???*/
 	blk_mq_map_swqueue(q);
 
+    /*a4.初始化多队列IO调度算法*/
 	if (!(set->flags & BLK_MQ_F_NO_SCHED)) {
 		int ret;
 
@@ -2903,3 +2914,13 @@ static int __init blk_mq_init(void)
 	return 0;
 }
 subsys_initcall(blk_mq_init);
+
+
+/* 
+不管是sq还是mq可从以下三个方面入手: 
+1)如何创建request_queue 
+    blk_mq_init_queue
+2)如何make request 
+	blk_queue_make_request
+3)request_queue如何关联上block驱动层
+*/

@@ -66,19 +66,24 @@ struct blk_mq_hw_ctx {
 	struct srcu_struct	queue_rq_srcu[0];
 };
 
+/*
+用于描述与存储器件相关的tag集合，抽象了存储器件的IO特征
+*/
 struct blk_mq_tag_set {
+    /*软件队列(ctx)到硬件队列(hctx)的映射表,将一个或者多个软件队列映射到一个硬件队列*/
 	unsigned int		*mq_map;
-	const struct blk_mq_ops	*ops;
-	unsigned int		nr_hw_queues;
-	unsigned int		queue_depth;	/* max hw supported */
-	unsigned int		reserved_tags;
+	const struct blk_mq_ops	*ops; /*块设备驱动的mq操作集合*/
+	unsigned int		nr_hw_queues; /*块设备硬件队列的数量*/
+	unsigned int		queue_depth;	/* max hw supported 块设备硬件队列深度*/
+	unsigned int		reserved_tags; /*块设备保留的tag数量*/
+    /*块设备驱动为每个request分配的额外空间大小,一般用于存放设备驱动的payload数据*/
 	unsigned int		cmd_size;	/* per-request extra data */
-	int			numa_node;
-	unsigned int		timeout;
+	int			numa_node; /*块设备连接NUMA节点:分配request内存使用,避免远端内存访问问题*/
+	unsigned int		timeout; /*请求处理的超时时间,单位是jiffies*/
 	unsigned int		flags;		/* BLK_MQ_F_* */
 	void			*driver_data;
 
-	struct blk_mq_tags	**tags;
+	struct blk_mq_tags	**tags; /*块设备mq tag数组*/
 
 	struct mutex		tag_list_lock;
 	struct list_head	tag_list;
