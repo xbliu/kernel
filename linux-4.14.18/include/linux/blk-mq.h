@@ -74,7 +74,8 @@ struct blk_mq_tag_set {
 	unsigned int		*mq_map;
 	const struct blk_mq_ops	*ops; /*块设备驱动的mq操作集合*/
 	unsigned int		nr_hw_queues; /*块设备硬件队列的数量*/
-	unsigned int		queue_depth;	/* max hw supported 块设备硬件队列深度*/
+    /*块设备硬件队列深度: 磁盘控制器所发出的批量指令的最大条数*/
+	unsigned int		queue_depth;	/* max hw supported*/
 	unsigned int		reserved_tags; /*块设备保留的tag数量*/
     /*块设备驱动为每个request分配的额外空间大小,一般用于存放设备驱动的payload数据*/
 	unsigned int		cmd_size;	/* per-request extra data */

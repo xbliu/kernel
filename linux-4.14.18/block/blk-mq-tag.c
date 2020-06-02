@@ -145,6 +145,10 @@ unsigned int blk_mq_get_tag(struct blk_mq_alloc_data *data)
 		 * pending IO submits before going to sleep waiting for
 		 * some to complete.
 		 */
+        /*
+        (预先分配的request已用完,将其派发到driver层,完成io操作以腾出空间)
+        硬件队列上的标签已经用完了,踢掉任何待办的IO提交,然后再去睡觉等待它们完成 
+        */
 		blk_mq_run_hw_queue(data->hctx, false);
 
 		/*

@@ -12,8 +12,8 @@ struct blk_mq_ctx {
 		struct list_head	rq_list;
 	}  ____cacheline_aligned_in_smp;
 
-	unsigned int		cpu;
-	unsigned int		index_hw;
+	unsigned int		cpu; //所在cpu序号
+	unsigned int		index_hw; //在hctx->ctxs数组中的序号
 
 	/* incremented at dispatch time */
 	unsigned long		rq_dispatched[2];
