@@ -507,7 +507,7 @@ int __init_memblock memblock_add_range(struct memblock_type *type,
 {
 	bool insert = false;
 	phys_addr_t obase = base;
-	phys_addr_t end = base + memblock_cap_size(base, &size);
+	phys_addr_t end = base + memblock_cap_size(base, &size); //size不能越界
 	int idx, nr_new;
 	struct memblock_region *rgn;
 
@@ -515,6 +515,7 @@ int __init_memblock memblock_add_range(struct memblock_type *type,
 		return 0;
 
 	/* special case for empty array */
+    /*未存在任何内存块区域*/
 	if (type->regions[0].size == 0) {
 		WARN_ON(type->cnt != 1 || type->total_size);
 		type->regions[0].base = base;

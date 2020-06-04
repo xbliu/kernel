@@ -38,18 +38,19 @@ struct memblock_region {
 };
 
 struct memblock_type {
-	unsigned long cnt;	/* number of regions */
-	unsigned long max;	/* size of the allocated array */
-	phys_addr_t total_size;	/* size of all regions */
+	unsigned long cnt;	/* number of regions 当前可用的region数目*/
+	unsigned long max;	/* size of the allocated array*/
+	phys_addr_t total_size;	/* size of all regions 当前所有region的内存大小总和*/
 	struct memblock_region *regions;
 	char *name;
 };
 
 struct memblock {
+    /*用来表示分配器分配内存是自低地址(低地址指的是内核映像尾部,下同)向高地址还是自高地址向低地址来分配的*/
 	bool bottom_up;  /* is bottom up direction? */
-	phys_addr_t current_limit;
-	struct memblock_type memory;
-	struct memblock_type reserved;
+	phys_addr_t current_limit; /*内存申请限制*/
+	struct memblock_type memory; /*可用内存*/
+	struct memblock_type reserved; /*已用内存*/
 #ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
 	struct memblock_type physmem;
 #endif
