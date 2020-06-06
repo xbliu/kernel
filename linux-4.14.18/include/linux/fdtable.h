@@ -24,11 +24,11 @@
 #define NR_OPEN_DEFAULT BITS_PER_LONG
 
 struct fdtable {
-	unsigned int max_fds;
+	unsigned int max_fds; //记录当前已分配最大的fd
 	struct file __rcu **fd;      /* current fd array */
 	unsigned long *close_on_exec;
-	unsigned long *open_fds;
-	unsigned long *full_fds_bits;
+	unsigned long *open_fds; //1bit表示一个fd,用于二级查找可用fd
+	unsigned long *full_fds_bits; //1 bit表示BITS_PER_LONG个fd,用于一级查找可用fd
 	struct rcu_head rcu;
 };
 

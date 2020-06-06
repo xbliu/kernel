@@ -220,6 +220,7 @@ repeat:
 	if (nr >= sysctl_nr_open)
 		return -EMFILE;
 
+	/*有其它进程在扩大fd容量,等待其扩充完*/
 	if (unlikely(files->resize_in_progress)) {
 		spin_unlock(&files->file_lock);
 		expanded = 1;
