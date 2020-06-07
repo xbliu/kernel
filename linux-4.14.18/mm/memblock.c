@@ -117,7 +117,7 @@ __memblock_find_range_bottom_up(phys_addr_t start, phys_addr_t end,
 		this_start = clamp(this_start, start, end);
 		this_end = clamp(this_end, start, end);
 
-		cand = round_up(this_start, align);
+		cand = round_up(this_start, align); //align对齐
 		if (cand < this_end && this_end - cand >= size)
 			return cand;
 	}
@@ -204,6 +204,7 @@ phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
 	 * try bottom-up allocation only when bottom-up mode
 	 * is set and @end is above the kernel image.
 	 */
+	 /*从kenerl image 结束地址后查找*/
 	if (memblock_bottom_up() && end > kernel_end) {
 		phys_addr_t bottom_up_start;
 
@@ -268,6 +269,7 @@ again:
 
 static void __init_memblock memblock_remove_region(struct memblock_type *type, unsigned long r)
 {
+	/*整体区域块往前移*/
 	type->total_size -= type->regions[r].size;
 	memmove(&type->regions[r], &type->regions[r + 1],
 		(type->cnt - (r + 1)) * sizeof(type->regions[r]));
@@ -323,6 +325,7 @@ void __init memblock_discard(void)
  * RETURNS:
  * 0 on success, -1 on failure.
  */
+ /*双倍扩充存放内存区域块的空间*/
 static int __init_memblock memblock_double_array(struct memblock_type *type,
 						phys_addr_t new_area_start,
 						phys_addr_t new_area_size)
@@ -371,6 +374,15 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
 		addr = new_array ? __pa(new_array) : 0;
 	} else {
 		/* only exclude range when trying to double reserved.regions */
+		/*
+		1.memory类型扩充直接从可用内存区域(memory)类型中的0地址开始分配
+		2.reserved类型扩充从可用内存区域obase+size处(即将插入reserved内存区域块后)开始分配
+		这样做的好处是内存区域块的地址可以保持连续,减小内存碎片.
+		eg:.reserved类型 新插入[1024,2048],扩充等于增加reserved新的插入块从2048开始明显两个区域块有大的
+		概率可以合并(可能不属于同一节点,可能flags不一样)
+		memory类型 新插入[1024,2048],扩充等于消耗memory内存区域块,
+		从0开始可以避免后面的连续内存区域块避免被截断
+		*/
 		if (type != &memblock.reserved)
 			new_area_start = new_area_size = 0;
 
@@ -440,6 +452,7 @@ static void __init_memblock memblock_merge_regions(struct memblock_type *type)
 		struct memblock_region *this = &type->regions[i];
 		struct memblock_region *next = &type->regions[i + 1];
 
+		/*前后两个内存区域块地址不相邻,不属于同一节点内存,flags不一致*/
 		if (this->base + this->size != next->base ||
 		    memblock_get_region_node(this) !=
 		    memblock_get_region_node(next) ||
@@ -451,6 +464,7 @@ static void __init_memblock memblock_merge_regions(struct memblock_type *type)
 
 		this->size += next->size;
 		/* move forward from next + 1, index of which is i + 2 */
+		//整体数据向前迁移
 		memmove(next, next + 1, (type->cnt - (i + 2)) * sizeof(*next));
 		type->cnt--;
 	}
@@ -501,6 +515,9 @@ static void __init_memblock memblock_insert_region(struct memblock_type *type,
  * RETURNS:
  * 0 on success, -errno on failure.
  */
+ /*
+不同节点的内存虽然可能大小一样,但是映射到整个系统地址不一样,故不存在不同节点内存地址一样的情况.
+*/
 int __init_memblock memblock_add_range(struct memblock_type *type,
 				phys_addr_t base, phys_addr_t size,
 				int nid, unsigned long flags)
@@ -515,7 +532,7 @@ int __init_memblock memblock_add_range(struct memblock_type *type,
 		return 0;
 
 	/* special case for empty array */
-    /*未存在任何内存块区域*/
+    /*未存在任何内存块区域,使用首个regions*/
 	if (type->regions[0].size == 0) {
 		WARN_ON(type->cnt != 1 || type->total_size);
 		type->regions[0].base = base;
@@ -531,45 +548,65 @@ repeat:
 	 * then with %true.  The first counts the number of regions needed
 	 * to accommodate the new area.  The second actually inserts them.
 	 */
+	/*
+	执行两次:
+	1)统计新插入内存区域块的数量,是否需要扩张存放内存区域块的空间
+	2)插入新的内存块区域,并合并那些相邻的内存区域块
+	*/ 
 	base = obase;
 	nr_new = 0;
 
 	for_each_memblock_type(type, rgn) {
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size;
-
+		
+		/*所有的区域块按地址的大小排序,因此rbase>=end后续的内存块区域不必比较*/
 		if (rbase >= end)
 			break;
-		if (rend <= base)
+		if (rend <= base) //后续的内存块区域可能与之有交叉
 			continue;
 		/*
 		 * @rgn overlaps.  If it separates the lower part of new
 		 * area, insert that portion.
 		 */
+		/*
+		rbase>base,rend与end有以下两种情况:
+		1)rend>=end:存在交叉部分为[rbase,end]
+		2)end>rend:存在交叉部分[rbase,rend]
+		*/
 		if (rbase > base) {
 #ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
 			WARN_ON(nid != memblock_get_region_node(rgn));
 #endif
 			WARN_ON(flags != rgn->flags);
 			nr_new++;
+			/*插入[base,rbase-base]未交叉部分*/
 			if (insert)
 				memblock_insert_region(type, idx++, base,
 						       rbase - base, nid,
 						       flags);
 		}
 		/* area below @rend is dealt with, forget about it */
+		/*
+		继续计算此区域与后续的内存块区域是否有交叉(一个区域可能跨越多个已加入的内存区域块)
+		*/
 		base = min(rend, end);
 	}
 
 	/* insert the remaining portion */
 	if (base < end) {
 		nr_new++;
+		/*
+		base分两种情况:
+		1)base未从重新计算过 [base,end]与已有内存块区域未存在交叉
+		2)base重新计算过 [base,end] 与已有内存区域过最后剩余未交叉的部分
+		*/
 		if (insert)
 			memblock_insert_region(type, idx, base, end - base,
 					       nid, flags);
 	}
 
-	if (!nr_new)
+	if (!nr_new) //没有新的内存块区域块插入
 		return 0;
 
 	/*
@@ -577,12 +614,14 @@ repeat:
 	 * insertions; otherwise, merge and return.
 	 */
 	if (!insert) {
+		/*计算是否有足够的内存区域块存放新的内存区域块*/
 		while (type->cnt + nr_new > type->max)
 			if (memblock_double_array(type, obase, size) < 0)
 				return -ENOMEM;
 		insert = true;
 		goto repeat;
 	} else {
+		/*插入完毕合并相邻的内存区域块*/
 		memblock_merge_regions(type);
 		return 0;
 	}
@@ -620,6 +659,7 @@ int __init_memblock memblock_add(phys_addr_t base, phys_addr_t size)
  * RETURNS:
  * 0 on success, -errno on failure.
  */
+ /*拆分区域块相交部分之后,拆分后的部分仍需比较,为了记录start_rgn,end_rgn*/
 static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 					phys_addr_t base, phys_addr_t size,
 					int *start_rgn, int *end_rgn)
@@ -634,27 +674,41 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 		return 0;
 
 	/* we'll create at most two more regions */
+	/*[base,end]无论与多个区域块相交还是一个区域块相交,只有两边边界区域才能相交,故至多创建两个区域块*/
 	while (type->cnt + 2 > type->max)
 		if (memblock_double_array(type, base, size) < 0)
 			return -ENOMEM;
 
+	/*
+	[base,end] 与[rbase,rend]根椐大小以下情况:
+	1)[base<end] <= [rbase<rend] 左侧
+	2)base < rbase < end <= rend  左侧交叉 
+	3)base <= [rbase < rend] < end 全包含
+	4)base=rbase, rend=end 相等
+	5)rbase < [base < end] <= rend 被包含
+	6)rbase <= base < rend < end 右侧交叉
+	7)[rbase < rend] <= [base < end] 右侧
+	隔离符合条件的有以下情况:2,3,4,5,6,其中[base,end]可能跨越多个区
+	*/
 	for_each_memblock_type(type, rgn) {
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size;
 
-		if (rbase >= end)
+		if (rbase >= end) //右侧超出范围无需再检测
 			break;
-		if (rend <= base)
+		if (rend <= base) //左侧超出范围继续检测下一个
 			continue;
 
-		if (rbase < base) {
-			/*
+		/*左侧不符合的部分分离出来插入到当前区域块前面*/
+		if (rbase < base) { 			/*
 			 * @rgn intersects from below.  Split and continue
 			 * to process the next region - the new top half.
 			 */
+			/*更改当前区域块大小[base,rend],也是下一个比较区域块(insert是整体往后移)*/ 
 			rgn->base = base;
 			rgn->size -= base - rbase;
 			type->total_size -= base - rbase;
+			/*插入[rbase,base]区域块*/
 			memblock_insert_region(type, idx, rbase, base - rbase,
 					       memblock_get_region_node(rgn),
 					       rgn->flags);
@@ -663,9 +717,12 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 			 * @rgn intersects from above.  Split and redo the
 			 * current region - the new bottom half.
 			 */
+			/*右侧不符合的部分分离出来重新插入到当前区域前面*/
+			/*更改当前区域块 [end,rend]*/
 			rgn->base = end;
 			rgn->size -= end - rbase;
 			type->total_size -= end - rbase;
+			/*插入[rbase,end]区域块(下一个比较区域)且id自减,重新判断当前区域(为了输出start_rgn,end_rgn)*/
 			memblock_insert_region(type, idx--, rbase, end - rbase,
 					       memblock_get_region_node(rgn),
 					       rgn->flags);
@@ -685,11 +742,12 @@ static int __init_memblock memblock_remove_range(struct memblock_type *type,
 {
 	int start_rgn, end_rgn;
 	int i, ret;
-
+	/*a1.计算符合的移除的区域块*/
 	ret = memblock_isolate_range(type, base, size, &start_rgn, &end_rgn);
 	if (ret)
 		return ret;
 
+	/*a2.移除区域块*/
 	for (i = end_rgn - 1; i >= start_rgn; i--)
 		memblock_remove_region(type, i);
 	return 0;
@@ -874,6 +932,7 @@ void __init_memblock __next_mem_range(u64 *idx, int nid, ulong flags,
 				      phys_addr_t *out_start,
 				      phys_addr_t *out_end, int *out_nid)
 {
+	/*idx_a 低32位 idx_b 高32位*/
 	int idx_a = *idx & 0xffffffff;
 	int idx_b = *idx >> 32;
 
@@ -904,6 +963,7 @@ void __init_memblock __next_mem_range(u64 *idx, int nid, ulong flags,
 		if (!(flags & MEMBLOCK_NOMAP) && memblock_is_nomap(m))
 			continue;
 
+		/*没有type_b(reserved) 直接返回*/
 		if (!type_b) {
 			if (out_start)
 				*out_start = m_start;
@@ -922,6 +982,7 @@ void __init_memblock __next_mem_range(u64 *idx, int nid, ulong flags,
 			phys_addr_t r_start;
 			phys_addr_t r_end;
 
+			/*!type_b (r[idx_b-1].end,r[idx_b].start)*/
 			r = &type_b->regions[idx_b];
 			r_start = idx_b ? r[-1].base + r[-1].size : 0;
 			r_end = idx_b < type_b->cnt ?
@@ -934,6 +995,7 @@ void __init_memblock __next_mem_range(u64 *idx, int nid, ulong flags,
 			if (r_start >= m_end)
 				break;
 			/* if the two regions intersect, we're done */
+			/*计算相交区域的大小*/
 			if (m_start < r_end) {
 				if (out_start)
 					*out_start =
@@ -946,10 +1008,10 @@ void __init_memblock __next_mem_range(u64 *idx, int nid, ulong flags,
 				 * The region which ends first is
 				 * advanced for the next iteration.
 				 */
-				if (m_end <= r_end)
+				if (m_end <= r_end) /*下一个type_a区域与此区域计算*/
 					idx_a++;
 				else
-					idx_b++;
+					idx_b++; /*下一个!type_b区域与idx_a区域块计算*/
 				*idx = (u32)idx_a | (u64)idx_b << 32;
 				return;
 			}
