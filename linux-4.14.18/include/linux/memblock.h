@@ -22,9 +22,28 @@
 
 /* Definition of memblock flags. */
 enum {
+    /*无特殊要求*/
 	MEMBLOCK_NONE		= 0x0,	/* No special request */
+    /*可热插拔的内存区域*/
 	MEMBLOCK_HOTPLUG	= 0x1,	/* hotpluggable region */
+    /*
+    镜像内存区域:当系统报告无法纠正的内存错误时,linux包含一些代码处理这些情况,并表只给受影响的进程发出信号 
+    (若错误发生在一个只读页中,可从磁盘读取来替换,甚至可以完全恢复) 
+    但对于内核代码执行过程中遇到的错误,没有恢复路径,除了一些特殊情况是不可能恢复的. 
+    内存镜像有三种方案: 
+    1)所有内存备份 
+        优点:软件无需做啥,硬件从镜像的另一边获取良好的数据
+        缺点:有效内存减半
+    2)部分内存镜像--只镜像一些内存控制器的内存 ???
+        优点:保留更多的内存
+        缺点:不得不在性能高的NUMA本地内存分配与安全的从内存镜像分配做出选择
+    3)地址范围部分内存镜像--在每一个内存控制器上做备份 ???
+        优点:可以调整镜像的数量与保持NUMA性能
+        缺点:必须编写内存管理代码
+    简而言之:像磁盘备份一样备份内存数据,当内存发生错误时可以切换过去.
+    */
 	MEMBLOCK_MIRROR		= 0x2,	/* mirrored region */
+    /*不能加入内核直接映射(kernel direct mapping)的内存区域*/
 	MEMBLOCK_NOMAP		= 0x4,	/* don't add to kernel direct mapping */
 };
 
@@ -38,9 +57,9 @@ struct memblock_region {
 };
 
 struct memblock_type {
-	unsigned long cnt;	/* number of regions 当前可用的region数目*/
-	unsigned long max;	/* size of the allocated array*/
-	phys_addr_t total_size;	/* size of all regions 当前所有region的内存大小总和*/
+	unsigned long cnt;	/* number of regions 当前已有的region数目*/
+	unsigned long max;	/* size of the allocated array 当前可管理的region最大数目*/
+	phys_addr_t total_size;	/* size of all regions 当前regions的内存总大小*/
 	struct memblock_region *regions;
 	char *name;
 };
@@ -49,9 +68,11 @@ struct memblock {
     /*用来表示分配器分配内存是自低地址(低地址指的是内核映像尾部,下同)向高地址还是自高地址向低地址来分配的*/
 	bool bottom_up;  /* is bottom up direction? */
 	phys_addr_t current_limit; /*内存申请限制*/
-	struct memblock_type memory; /*可用内存*/
-	struct memblock_type reserved; /*已用内存*/
+	struct memblock_type memory; /*可用内存型*/
+	struct memblock_type reserved; /*已用内存型*/
 #ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
+    /*物理内存型:系统存在的所有物理内存区域(只有部分体系架构支持),不同于memblock内存列表, 
+      总是包含所有的内存范围,即使内存被限制了eg:mem=kernel paramerter*/
 	struct memblock_type physmem;
 #endif
 };
