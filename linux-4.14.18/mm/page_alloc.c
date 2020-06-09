@@ -1656,7 +1656,7 @@ static inline void expand(struct zone *zone, struct page *page,
 	unsigned long size = 1 << high;
 	/*
 	zone 含有MAX_ORDER free_area, free_area包含多个free_list
-	expand预期是从high order 的free_area中取出一份,将其对半拆分直到得到一份low order的page
+	expand预期是从high order 的free_area中取出一个元素,将其对半拆分直到得到low order的page
 	*/
 	while (high > low) {
 		/*
@@ -1823,7 +1823,7 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 	struct page *page;
 
 	/* Find a page of the appropriate size in the preferred list */
-	/*查找此zone内从order到MAX_ORDER阶 free_area中migratetype的free_list中最先适配的page,即最先适配算法*/
+	/*查找此zone内从order到MAX_ORDER阶 free_area中migratetype的free_list中最先适配的元素(page),即最先适配算法*/
 	for (current_order = order; current_order < MAX_ORDER; ++current_order) {
 		area = &(zone->free_area[current_order]);
 		page = list_first_entry_or_null(&area->free_list[migratetype],
@@ -1986,9 +1986,14 @@ static bool can_steal_fallback(unsigned int order, int start_mt)
 	 * but, below check doesn't guarantee it and that is just heuristic
 	 * so could be changed anytime.
 	 */
+	/*可借取整个pageblock:可以避免内存碎片,下面的检查选项可能会改变*/ 
 	if (order >= pageblock_order)
 		return true;
-
+	/*
+	a.当前得到块为一大块即阶数>=pageblock_order / 2
+	b.首选迁移类型为RECLAIMABLE,UNMOVABLE
+	c.没有启用迁移分组机制
+	*/
 	if (order >= pageblock_order / 2 ||
 		start_mt == MIGRATE_RECLAIMABLE ||
 		start_mt == MIGRATE_UNMOVABLE ||
@@ -2093,20 +2098,23 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 
 	*can_steal = false;
 	for (i = 0;; i++) {
+		/*
+		MIGRATE_UNMOVABLE,MIGRATE_MOVABLE,MIGRATE_RECLAIMABLE三者可以互相窃取,其它不行
+		*/
 		fallback_mt = fallbacks[migratetype][i];
 		if (fallback_mt == MIGRATE_TYPES)
 			break;
 
-		if (list_empty(&area->free_list[fallback_mt]))
+		if (list_empty(&area->free_list[fallback_mt])) //有可用的元素可窃取
 			continue;
 
 		if (can_steal_fallback(order, migratetype))
 			*can_steal = true;
 
-		if (!only_stealable)
+		if (!only_stealable) /*只要有元素可窃就行*/
 			return fallback_mt;
 
-		if (*can_steal)
+		if (*can_steal) /*满足窃取的条件*/
 			return fallback_mt;
 	}
 
@@ -2260,6 +2268,7 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype)
 	for (current_order = MAX_ORDER - 1; current_order >= order;
 				--current_order) {
 		area = &(zone->free_area[current_order]);
+		/*查找合适的可借取的migratetype的类型*/
 		fallback_mt = find_suitable_fallback(area, current_order,
 				start_migratetype, false, &can_steal);
 		if (fallback_mt == -1)
@@ -2273,6 +2282,9 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype)
 		 * allocation falls back into a different pageblock than this
 		 * one, it won't cause permanent fragmentation.
 		 */
+		 /*MOVABLE类型 尽管没有达到窃取条件,但是因为是可以移动的不会导致内存碎片,
+		 所以最先适配查找所需元素
+		 */
 		if (!can_steal && start_migratetype == MIGRATE_MOVABLE
 					&& current_order > order)
 			goto find_smallest;
@@ -2283,6 +2295,7 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype)
 	return false;
 
 find_smallest:
+	/*MOVABLE 类型 最先适配获取所需元素*/
 	for (current_order = order; current_order < MAX_ORDER;
 							current_order++) {
 		area = &(zone->free_area[current_order]);
