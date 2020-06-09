@@ -1654,11 +1654,20 @@ static inline void expand(struct zone *zone, struct page *page,
 	int migratetype)
 {
 	unsigned long size = 1 << high;
-
+	/*
+	zone 含有MAX_ORDER free_area, free_area包含多个free_list
+	expand预期是从high order 的free_area中取出一份,将其对半拆分直到得到一份low order的page
+	*/
 	while (high > low) {
+		/*
+		page 的order为high,即page的相对范围为[0,1<<high]
+		1)对半拆分为[0,1<<(high-1)-1], [1<<(high-1),1<<high]
+		2)[1<<(high-1),1<<high]加入到high-1的free_area
+		3)[0,1<<(high-1)-1]继续1)对半拆分步骤,直到high==low.
+		*/
 		area--;
 		high--;
-		size >>= 1;
+		size >>= 1; //对page进行对半拆分
 		VM_BUG_ON_PAGE(bad_range(zone, &page[size]), &page[size]);
 
 		/*
@@ -1667,9 +1676,13 @@ static inline void expand(struct zone *zone, struct page *page,
 		 * Corresponding page table entries will not be touched,
 		 * pages will stay not present in virtual address space
 		 */
+		 /*CONFIG_DEBUG_PAGEALLOC才有效,用于调试*/
 		if (set_page_guard(zone, &page[size], high, migratetype))
 			continue;
-
+		
+		/*
+		将拆分的page加入到相应free_area的free_list中
+		*/
 		list_add(&page[size].lru, &area->free_list[migratetype]);
 		area->nr_free++;
 		set_page_order(&page[size], high);
@@ -1810,15 +1823,19 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 	struct page *page;
 
 	/* Find a page of the appropriate size in the preferred list */
+	/*查找此zone内从order到MAX_ORDER阶 free_area中migratetype的free_list中最先适配的page,即最先适配算法*/
 	for (current_order = order; current_order < MAX_ORDER; ++current_order) {
 		area = &(zone->free_area[current_order]);
 		page = list_first_entry_or_null(&area->free_list[migratetype],
 							struct page, lru);
 		if (!page)
 			continue;
+		/*从伙伴系统中移除*/
 		list_del(&page->lru);
 		rmv_page_order(page);
 		area->nr_free--;
+		
+		/*current_order > order时,page需要拆分才能得到order阶的page*/
 		expand(zone, page, order, current_order, area, migratetype);
 		set_pcppage_migratetype(page, migratetype);
 		return page;
@@ -2305,9 +2322,10 @@ static struct page *__rmqueue(struct zone *zone, unsigned int order,
 
 retry:
 	page = __rmqueue_smallest(zone, order, migratetype);
+	/*当前migratetype没有足够的page从其它migratetype类型中借*/
 	if (unlikely(!page)) {
 		if (migratetype == MIGRATE_MOVABLE)
-			page = __rmqueue_cma_fallback(zone, order);
+			page = __rmqueue_cma_fallback(zone, order); //MIGRATE_MOVABLE从MIGRATE_CMA借
 
 		if (!page && __rmqueue_fallback(zone, order, migratetype))
 			goto retry;
