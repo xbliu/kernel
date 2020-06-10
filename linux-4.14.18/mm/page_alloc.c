@@ -1882,6 +1882,7 @@ static int move_freepages(struct zone *zone,
 	if (num_movable)
 		*num_movable = 0;
 
+    /*在[start_page,end_page]范围内寻找可用页将其移动到请求的free_list中*/
 	for (page = start_page; page <= end_page;) {
 		if (!pfn_valid_within(page_to_pfn(page))) {
 			page++;
@@ -1891,6 +1892,7 @@ static int move_freepages(struct zone *zone,
 		/* Make sure we are not inadvertently changing nodes */
 		VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
 
+        /*不是伙伴系统中的pa伙即已用页 skip*/
 		if (!PageBuddy(page)) {
 			/*
 			 * We assume that pages that could be isolated for
@@ -1905,6 +1907,7 @@ static int move_freepages(struct zone *zone,
 			continue;
 		}
 
+        /*伙伴系统中的page即free page 移动到free_list中*/
 		order = page_order(page);
 		list_move(&page->lru,
 			  &zone->free_area[order].free_list[migratetype]);
@@ -1989,6 +1992,9 @@ static bool can_steal_fallback(unsigned int order, int start_mt)
  * of pages are free or compatible, we can change migratetype of the pageblock
  * itself, so pages freed in the future will be put on the correct free list.
  */
+/*
+需要总结????????????
+*/
 static void steal_suitable_fallback(struct zone *zone, struct page *page,
 					int start_type, bool whole_block)
 {
@@ -2007,12 +2013,14 @@ static void steal_suitable_fallback(struct zone *zone, struct page *page,
 		goto single_page;
 
 	/* Take ownership for orders >= pageblock_order */
+    /*page order足够大,将其完全窃取过来*/
 	if (current_order >= pageblock_order) {
 		change_pageblock_range(page, current_order, start_type);
 		goto single_page;
 	}
 
 	/* We are not allowed to try stealing from the whole block */
+    /*不能整个页面块偷取过来,仅借用,用完之后还回去(原来的migratetype)*/
 	if (!whole_block)
 		goto single_page;
 
@@ -2023,6 +2031,9 @@ static void steal_suitable_fallback(struct zone *zone, struct page *page,
 	 * For movable allocation, it's the number of movable pages which
 	 * we just obtained. For other types it's a bit more tricky.
 	 */
+    /*
+    目标为MOVABLE 分配的页,所以当前占用的页(movable_pages)挪用过去可跟free_pages整合在一起
+    */
 	if (start_type == MIGRATE_MOVABLE) {
 		alike_pages = movable_pages;
 	} else {
@@ -2033,6 +2044,12 @@ static void steal_suitable_fallback(struct zone *zone, struct page *page,
 		 * vice versa, be conservative since we can't distinguish the
 		 * exact migratetype of non-movable pages.
 		 */
+        /*
+        如果我们将一个可回收或不可移动的分配回落到可移动的页块上,
+          则认为所有不可移动的页面都是兼容的.
+        如果是UNMOVABLE回落到RECLAIMABLE,或者反之亦然,要保守一点,
+          因为我们无法准确区分不可移动页面的migratetype.
+        */
 		if (old_block_type == MIGRATE_MOVABLE)
 			alike_pages = pageblock_nr_pages
 						- (free_pages + movable_pages);
@@ -2041,13 +2058,15 @@ static void steal_suitable_fallback(struct zone *zone, struct page *page,
 	}
 
 	/* moving whole block can fail due to zone boundary conditions */
+    /*移动整块失败*/
 	if (!free_pages)
 		goto single_page;
 
 	/*
 	 * If a sufficient number of pages in the block are either free or of
-	 * comparable migratability as our allocation, claim the whole block.
-	 */
+     * comparable migratability as our allocation, claim the whole block.
+     */
+    /*有足够多的页或者跟分配的页兼容,窃取整个页面 阀值为pageblock_order/2*/
 	if (free_pages + alike_pages >= (1 << (pageblock_order-1)) ||
 			page_group_by_mobility_disabled)
 		set_pageblock_migratetype(page, start_type);
