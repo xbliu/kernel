@@ -491,9 +491,12 @@ unsigned long reclaim_clean_pages_from_list(struct zone *zone,
 #define ALLOC_OOM		ALLOC_NO_WATERMARKS
 #endif
 
+/*通知伙伴系统在急需内存时放宽分配规则.在分配高端内存域的内存时,ALLOC_HIGH进一步放宽限制*/
 #define ALLOC_HARDER		0x10 /* try to alloc harder */
 #define ALLOC_HIGH		0x20 /* __GFP_HIGH set */
+/*告知内核,内存只能从当前进程允许运行的CPU相关联的内存结点分配,当然该选项只对NUMA系统有意义*/
 #define ALLOC_CPUSET		0x40 /* check for correct cpuset */
+/*通知伙伴系统从CMD区域中分配内存*/
 #define ALLOC_CMA		0x80 /* allow allocations from CMA areas */
 
 enum ttu_flags;
