@@ -271,12 +271,15 @@ enum zone_watermarks {
 #define high_wmark_pages(z) (z->watermark[WMARK_HIGH])
 
 struct per_cpu_pages {
+    /*当前列表的page数*/
 	int count;		/* number of pages in the list */
+    /*高水位:pages超过此阀值需要释放,即缓存页不能太多*/
 	int high;		/* high watermark, emptying needed */
+    /*每次增加/删除的page数*/
 	int batch;		/* chunk size for buddy add/remove */
 
 	/* Lists of pages, one per migrate type stored on the pcp-lists */
-	struct list_head lists[MIGRATE_PCPTYPES];
+	struct list_head lists[MIGRATE_PCPTYPES]; /*UNMOVABLE MOVABLE RECLAIMABLE三类型*/
 };
 
 struct per_cpu_pageset {
