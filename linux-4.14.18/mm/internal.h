@@ -141,6 +141,9 @@ struct alloc_context {
  *     P = B & ~(1 << O)
  *
  * Assumption: *_mem_map is contiguous at least up to MAX_ORDER
+ *公式的原理其实就是低order位屏蔽
+ *==> B2,B1为伙伴,则低O位是相同的,(O+1)位不同  异或操作
+ * 同理,合并伙伴时相当于又左移了一位，这就要求原1<<O位也要清0
  */
 static inline unsigned long
 __find_buddy_pfn(unsigned long page_pfn, unsigned int order)

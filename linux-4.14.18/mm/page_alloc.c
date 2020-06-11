@@ -755,7 +755,14 @@ static inline void rmv_page_order(struct page *page)
 static inline int page_is_buddy(struct page *page, struct page *buddy,
 							unsigned int order)
 {
-	if (page_is_guard(buddy) && page_order(buddy) == order) {
+	/*
+	page与buddy是否可以合并需满足以下条件:
+	1.buddy不是空洞页 (进入之前已判断)
+	2.buddy在伙伴系统内(可用) 
+	3.page与buddy有相同的order
+	4.page与buddy在同一区域
+	*/
+	if (page_is_guard(buddy) && page_order(buddy) == order) { //guard page是不会被占用的
 		if (page_zone_id(page) != page_zone_id(buddy))
 			return 0;
 
@@ -815,6 +822,7 @@ static inline void __free_one_page(struct page *page,
 	struct page *buddy;
 	unsigned int max_order;
 
+	/*先尝试合并到适当的页 (pageblock_order)*/
 	max_order = min_t(unsigned int, MAX_ORDER, pageblock_order + 1);
 
 	VM_BUG_ON(!zone_is_initialized(zone));
@@ -828,18 +836,26 @@ static inline void __free_one_page(struct page *page,
 	VM_BUG_ON_PAGE(bad_range(zone, page), page);
 
 continue_merging:
+	/*
+	当order page与buddy合并之后,order +1也可能可以合并,故这里循环
+	即合并page后尝试合并父一级的page直到不能合并为止
+	*/
 	while (order < max_order - 1) {
+		/*获取伙伴页*/
 		buddy_pfn = __find_buddy_pfn(pfn, order);
 		buddy = page + (buddy_pfn - pfn);
-
+		
+		/*buddy_pfn是否是空洞页*/
 		if (!pfn_valid_within(buddy_pfn))
 			goto done_merging;
+		/*是否以合并*/
 		if (!page_is_buddy(page, buddy, order))
 			goto done_merging;
 		/*
 		 * Our buddy is free or it is CONFIG_DEBUG_PAGEALLOC guard page,
 		 * merge with it and move up one order.
 		 */
+		 /*从之前的free_erea中移除或清除guard标志*/
 		if (page_is_guard(buddy)) {
 			clear_page_guard(zone, buddy, order, migratetype);
 		} else {
@@ -847,11 +863,14 @@ continue_merging:
 			zone->free_area[order].nr_free--;
 			rmv_page_order(buddy);
 		}
-		combined_pfn = buddy_pfn & pfn;
+		/*合并两个伙伴page*/
+		combined_pfn = buddy_pfn & pfn; //parent order page
 		page = page + (combined_pfn - pfn);
 		pfn = combined_pfn;
 		order++;
 	}
+
+	/*合并到pageblock_order(大页),看是否可以继续往上合并*/
 	if (max_order < MAX_ORDER) {
 		/* If we are here, it means order is >= pageblock_order.
 		 * We want to prevent merge between freepages on isolate
@@ -861,6 +880,7 @@ continue_merging:
 		 * We don't want to hit this code for the more frequent
 		 * low-order merging.
 		 */
+		/*isolate page不合并*/ 
 		if (unlikely(has_isolate_pageblock(zone))) {
 			int buddy_mt;
 
@@ -888,8 +908,17 @@ done_merging:
 	 * so it's less likely to be used soon and more likely to be merged
 	 * as a higher order page
 	 */
+	/*
+	order+1的buddy是free的,
+	只要order page再合并一次就可以很快order+1 page合并
+	所以将order page放在free_list尾部,降低使用的机会使order+1更多机会去合并
+	*/ 
 	if ((order < MAX_ORDER-2) && pfn_valid_within(buddy_pfn)) {
 		struct page *higher_page, *higher_buddy;
+		/*
+		parent order page (order + 1)
+		buddy_pfn pfn低order位相同,order+1不同,相&即可得parent
+		*/
 		combined_pfn = buddy_pfn & pfn;
 		higher_page = page + (combined_pfn - pfn);
 		buddy_pfn = __find_buddy_pfn(combined_pfn, order + 1);
@@ -897,11 +926,12 @@ done_merging:
 		if (pfn_valid_within(buddy_pfn) &&
 		    page_is_buddy(higher_page, higher_buddy, order + 1)) {
 			list_add_tail(&page->lru,
-				&zone->free_area[order].free_list[migratetype]);
+				&zone->free_area[order].free_list[migratetype]); //加入到free_list尾部
 			goto out;
 		}
 	}
 
+	//加入到free_list
 	list_add(&page->lru, &zone->free_area[order].free_list[migratetype]);
 out:
 	zone->free_area[order].nr_free++;
