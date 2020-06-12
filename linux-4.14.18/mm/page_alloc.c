@@ -1157,6 +1157,11 @@ static void free_pcppages_bulk(struct zone *zone, int count,
 		 * off fuller lists instead of spinning excessively around empty
 		 * lists
 		 */
+        /*
+        1)以轮转的方式从各类型的list中删除pages 
+        2)batch_free避免在空列表中进行空转操作,遇到空列表时会自增 (跳过空列表) 
+        3)此部分若释放过程中全为空的情况下(即没有足够的页来释放),会造成空转***
+        */
 		do {
 			batch_free++;
 			if (++migratetype == MIGRATE_PCPTYPES)
@@ -1165,9 +1170,13 @@ static void free_pcppages_bulk(struct zone *zone, int count,
 		} while (list_empty(list));
 
 		/* This is the only non-empty list. Free them all. */
+        /*只有此列表不为空,剩下的从此列表中释放*/
 		if (batch_free == MIGRATE_PCPTYPES)
 			batch_free = count;
 
+        /*
+        释放batch_free个元素
+        */
 		do {
 			int mt;	/* migratetype of the to-be-freed page */
 
@@ -1240,6 +1249,7 @@ static void __meminit init_reserved_page(unsigned long pfn)
 	nid = early_pfn_to_nid(pfn);
 	pgdat = NODE_DATA(nid);
 
+    /*查找page所属区域*/
 	for (zid = 0; zid < MAX_NR_ZONES; zid++) {
 		struct zone *zone = &pgdat->node_zones[zid];
 
@@ -1394,6 +1404,12 @@ void __init __free_pages_bootmem(struct page *page, unsigned long pfn,
  * the first and last page of a pageblock and avoid checking each individual
  * page in a pageblock.
  */
+/* 
+pfn转page需要满足以下条件: 
+     1)地址有效 
+     2)内存 online <热插拔的内存> 
+     3)[start_pfn,end_pfn]内都属于zone 
+*/
 struct page *__pageblock_pfn_to_page(unsigned long start_pfn,
 				     unsigned long end_pfn, struct zone *zone)
 {
@@ -1427,6 +1443,7 @@ void set_zone_contiguous(struct zone *zone)
 	unsigned long block_start_pfn = zone->zone_start_pfn;
 	unsigned long block_end_pfn;
 
+    /*以pageblock_nr_pages为单位计算zone所有的地址是否连续*/
 	block_end_pfn = ALIGN(block_start_pfn + 1, pageblock_nr_pages);
 	for (; block_start_pfn < zone_end_pfn(zone);
 			block_start_pfn = block_end_pfn,
@@ -2185,6 +2202,7 @@ static void reserve_highatomic_pageblock(struct page *page, struct zone *zone,
 	 * Limit the number reserved to 1 pageblock or roughly 1% of a zone.
 	 * Check is race-prone but harmless.
 	 */
+    /*预留一个pageblock或者大约1%区域 (至少一个pageblock)*/
 	max_managed = (zone->managed_pages / 100) + pageblock_nr_pages;
 	if (zone->nr_reserved_highatomic >= max_managed)
 		return;
