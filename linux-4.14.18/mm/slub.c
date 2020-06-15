@@ -3770,12 +3770,13 @@ void *__kmalloc(size_t size, gfp_t flags)
 
 	if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
 		return kmalloc_large(size, flags);
-
+	/*a1.根椐size找到相应大小的kmem_cache*/
 	s = kmalloc_slab(size, flags);
 
 	if (unlikely(ZERO_OR_NULL_PTR(s)))
 		return s;
 
+	/*a2.从kmem_cache中分配*/
 	ret = slab_alloc(s, flags, _RET_IP_);
 
 	trace_kmalloc(_RET_IP_, ret, size, s->size, flags);
