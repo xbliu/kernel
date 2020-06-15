@@ -34,6 +34,7 @@
  * coalesce naturally under reasonable reclaim pressure and those which
  * will not.
  */
+ /*PAGE_ALLOC_COSTLY_ORDER是指那此分配成本较高的行为,介于在回收压力下需要合并与无需合并之间的分配*/
 #define PAGE_ALLOC_COSTLY_ORDER 3
 
 enum migratetype {

@@ -323,6 +323,7 @@ static inline int order_objects(int order, unsigned long size, int reserved)
 static inline struct kmem_cache_order_objects oo_make(int order,
 		unsigned long size, int reserved)
 {
+    /*高OO_SHIFT(16)存放order 低OO_SHIFT位存放objects数目*/
 	struct kmem_cache_order_objects x = {
 		(order << OO_SHIFT) + order_objects(order, size, reserved)
 	};
@@ -3231,6 +3232,14 @@ static int slub_min_objects;
  * requested a higher mininum order then we start with that one instead of
  * the smallest order which will fit the object.
  */
+/*
+1)page order对性能与其它组件有重大影响,一般来说,order 0应该是首选,因为它不会造成页面分配器的碎片. 
+但较大的对象放入order 0 page会有问题,因为可能有太多不使用的空间,若超过1/16的空间被浪费,分配更高的order减小空间浪费. 
+2)为了达到令人满意的性能,必须确保在一个slab中最小的对象数量,否则会在partial lists上产生过多的活动,它需要使用list_lock. 
+3)尽可能的保持更低的order page,而不是更小的空间浪费. 
+4)选择从用户要求的最小order开始而不是最适合的最小order开始. 
+从浪费空间与page order(高的order意味着内存碎片???)两方面考虑. 
+*/
 static inline int slab_order(int size, int min_objects,
 				int max_order, int fract_leftover, int reserved)
 {
@@ -3238,9 +3247,11 @@ static inline int slab_order(int size, int min_objects,
 	int rem;
 	int min_order = slub_min_order;
 
+    /*若大于MAX_OBJS_PER_PAGE,计算MAX_OBJS_PER_PAGE个objects需要多少page*/
 	if (order_objects(min_order, size, reserved) > MAX_OBJS_PER_PAGE)
 		return get_order(size * MAX_OBJS_PER_PAGE) - 1;
 
+    /*浪费的空间<=总大小的1/fract_leftover*/
 	for (order = max(min_order, get_order(min_objects * size + reserved));
 			order <= max_order; order++) {
 
@@ -3270,28 +3281,36 @@ static inline int calculate_order(int size, int reserved)
 	 * First we increase the acceptable waste in a slab. Then
 	 * we reduce the minimum objects required in a slab.
 	 */
+    /*
+    a1.计算最小的objects数量: 
+        1)使用自定义
+        2)未自定义: 4倍 (cpu的数目最高有效位+1)
+    */
 	min_objects = slub_min_objects;
 	if (!min_objects)
-		min_objects = 4 * (fls(nr_cpu_ids) + 1);
-	max_objects = order_objects(slub_max_order, size, reserved);
+		min_objects = 4 * (fls(nr_cpu_ids) + 1); //nr_cpu_ids最高有效位 + 1
+    /*a2.计算最大objects数量*/
+	max_objects = order_objects(slub_max_order, size, reserved); //(slub_max_order page-预留的空间)/size
 	min_objects = min(min_objects, max_objects);
 
 	while (min_objects > 1) {
 		fraction = 16;
 		while (fraction >= 4) {
+            /*计算浪费的空间小于总大小的1/fraction相应的order*/
 			order = slab_order(size, min_objects,
 					slub_max_order, fraction, reserved);
 			if (order <= slub_max_order)
 				return order;
-			fraction /= 2;
+			fraction /= 2; //增大浪费的系数
 		}
-		min_objects--;
+		min_objects--; //减小最小objects,降低order的开始大小
 	}
 
 	/*
 	 * We were unable to place multiple objects in a slab. Now
 	 * lets see if we can place a single object there.
 	 */
+    /*只放一个objects(多个objects不满足要求)*/
 	order = slab_order(size, 1, slub_max_order, 1, reserved);
 	if (order <= slub_max_order)
 		return order;
@@ -3475,6 +3494,24 @@ static void set_cpu_partial(struct kmem_cache *s)
  * calculate_sizes() determines the order and the distribution of data within
  * a slab object.
  */
+/*
+根椐calculate size计算出来的object layout: 
+<object_size> [指针align | RED_ZONE]  <free_point>  [alloc && free track]    [padding]    [red_left_pad<s->align>] [s->align]  
+<--          inuse/offset       -->  sizeof(void*)   2*sizeof(track)        sizeof(void*) sizeof(void*)<s->align> 
+<---                                            size                                                                     --> 
+RD_ZONE: 
+    用于内存右侧越界检测 当object_size因sizeof(void*)对齐有多余空间时,RED_ZONE利用此空间.否则RED_ZONE需另开辟空间 
+free_point: 
+    存放下一个空闲的object地址. 
+track: 
+    用于alloc/free 的跟踪 
+padding: 
+    sizeof(void *)bytes 填充区域. 增加一些空的填充,可以捕捉到来自早期对象的覆盖,
+    而不是让跟踪信息或自由指针被破坏,如果用户在对象开始前写入的话. 
+red_left_pad:
+    用于内存左侧越界检测.
+*/
+
 static int calculate_sizes(struct kmem_cache *s, int forced_order)
 {
 	unsigned long flags = s->flags;
@@ -3514,7 +3551,7 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 	 * With that we have determined the number of bytes in actual use
 	 * by the object. This is the potential offset to the free pointer.
 	 */
-	s->inuse = size;
+	s->inuse = size; //free pointer的潜在偏移量
 
 	if (((flags & (SLAB_TYPESAFE_BY_RCU | SLAB_POISON)) ||
 		s->ctor)) {
@@ -3562,12 +3599,16 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 	 * offset 0. In order to align the objects we have to simply size
 	 * each object to conform to the alignment.
 	 */
+    /*
+    SLUB从偏移量0开始,紧接着存储一个对象. 
+    为了对齐对象,我们必须简单地调整每个对象的大小,使其符合对齐方式
+    */
 	size = ALIGN(size, s->align);
 	s->size = size;
 	if (forced_order >= 0)
 		order = forced_order;
 	else
-		order = calculate_order(size, s->reserved);
+		order = calculate_order(size, s->reserved); //计算符合需求的page order
 
 	if (order < 0)
 		return 0;
@@ -3586,7 +3627,7 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 	 * Determine the number of objects per slab
 	 */
 	s->oo = oo_make(order, size, s->reserved);
-	s->min = oo_make(get_order(size), size, s->reserved);
+	s->min = oo_make(get_order(size), size, s->reserved); //计算最少order存放objects的数量
 	if (oo_objects(s->oo) > oo_objects(s->max))
 		s->max = s->oo;
 
@@ -3606,6 +3647,7 @@ static int kmem_cache_open(struct kmem_cache *s, unsigned long flags)
 
 	if (!calculate_sizes(s, -1))
 		goto error;
+    //禁止调试选项,清除相应flags,size重新计算
 	if (disable_higher_order_debug) {
 		/*
 		 * Disable debugging flags that store metadata if the min slab
@@ -3630,9 +3672,10 @@ static int kmem_cache_open(struct kmem_cache *s, unsigned long flags)
 	 * The larger the object size is, the more pages we want on the partial
 	 * list to avoid pounding the page allocator excessively.
 	 */
-	set_min_partial(s, ilog2(s->size) / 2);
+    /*对象大小越大,部分列表上的页数就越多,以避免过度冲击页面分配器*/
+	set_min_partial(s, ilog2(s->size) / 2); //设置partial
 
-	set_cpu_partial(s);
+	set_cpu_partial(s); //设置cpu partial
 
 #ifdef CONFIG_NUMA
 	s->remote_node_defrag_ratio = 1000;
@@ -3644,6 +3687,7 @@ static int kmem_cache_open(struct kmem_cache *s, unsigned long flags)
 			goto error;
 	}
 
+    /*初始化kmem_cache_node cpu_slab*/
 	if (!init_kmem_cache_nodes(s))
 		goto error;
 
