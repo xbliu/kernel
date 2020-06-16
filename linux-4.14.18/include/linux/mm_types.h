@@ -93,7 +93,9 @@ struct page {
 				unsigned int active;		/* SLAB */
 				struct {			/* SLUB */
 					unsigned inuse:16;
+                    /*slab中已经分配的对象的数量*/
 					unsigned objects:15;
+                    /*用来判断某一个slab(即内存页)是否已经被某个CPU用作slab cache,即属于某个 kmem_cache_cpu*/
 					unsigned frozen:1;
 				};
 				int units;			/* SLOB */

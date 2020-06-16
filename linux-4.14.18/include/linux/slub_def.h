@@ -80,12 +80,16 @@ struct kmem_cache_order_objects {
  * Slab cache management.
  */
 struct kmem_cache {
+    /*local CPU的缓存对象*/
 	struct kmem_cache_cpu __percpu *cpu_slab;
 	/* Used for retriving partial slabs etc */
 	unsigned long flags;
 	unsigned long min_partial;
+    /*slab对象的总大小,包括元数据(对齐增加的大小,debug信息)*/
 	int size;		/* The size of an object including meta data */
+    /*对象实际的大小*/
 	int object_size;	/* The size of an object without meta data */
+    /*空闲对象指针的偏移*/
 	int offset;		/* Free pointer offset. */
 #ifdef CONFIG_SLUB_CPU_PARTIAL
 	int cpu_partial;	/* Number of per cpu partial objects to keep around */
@@ -97,8 +101,11 @@ struct kmem_cache {
 	struct kmem_cache_order_objects min;
 	gfp_t allocflags;	/* gfp flags to use on each alloc */
 	int refcount;		/* Refcount for slab cache destroy */
+    /*构造函数*/
 	void (*ctor)(void *);
+    /*元数据的偏移*/
 	int inuse;		/* Offset to metadata */
+    /*对齐大小*/
 	int align;		/* Alignment */
 	int reserved;		/* Reserved bytes at the end of slabs */
 	int red_left_pad;	/* Left redzone padding size */
