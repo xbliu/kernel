@@ -472,8 +472,8 @@ struct kmem_cache_node {
 #endif
 
 #ifdef CONFIG_SLUB
-	unsigned long nr_partial;
-	struct list_head partial;
+	unsigned long nr_partial; /*partial slab的数量*/
+	struct list_head partial; /*partial slab链表*/
 #ifdef CONFIG_SLUB_DEBUG
 	atomic_long_t nr_slabs;
 	atomic_long_t total_objects;
