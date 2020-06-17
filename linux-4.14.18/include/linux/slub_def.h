@@ -39,10 +39,13 @@ enum stat_item {
 	NR_SLUB_STAT_ITEMS };
 
 struct kmem_cache_cpu {
+    /*下一个可用的object*/
 	void **freelist;	/* Pointer to next available object */
 	unsigned long tid;	/* Globally unique transaction id */
+    /*slab内存对应的page指针*/
 	struct page *page;	/* The slab from which we are allocating */
 #ifdef CONFIG_SLUB_CPU_PARTIAL
+    /*本地的slab partial链表*/
 	struct page *partial;	/* Partially allocated frozen slabs */
 #endif
 #ifdef CONFIG_SLUB_STATS
@@ -92,6 +95,7 @@ struct kmem_cache {
     /*空闲对象指针的偏移*/
 	int offset;		/* Free pointer offset. */
 #ifdef CONFIG_SLUB_CPU_PARTIAL
+    /*per cpu partial中所有slab的可用object的数量的最大值*/
 	int cpu_partial;	/* Number of per cpu partial objects to keep around */
 #endif
 	struct kmem_cache_order_objects oo;
