@@ -2068,6 +2068,17 @@ static void deactivate_slab(struct kmem_cache *s, struct page *page,
 	 * There is no need to take the list->lock because the page
 	 * is still frozen.
 	 */
+    /* 
+      将per cpu objects还回到page->freelist中   
+      freelist->A->B(nextfree)->C->D->NULL
+      page->freelist->A1->B1->C1->D1
+      ==>
+        freelist->A->A1->B1->C1->D1
+        B(nextfree)->C->D->NULL
+      ==>
+        page->freelist->A->A1->B1->C1->D1
+        freelist->B->C(nextfree)->D->NULL
+    */
 	while (freelist && (nextfree = get_freepointer(s, freelist))) {
 		void *prior;
 		unsigned long counters;
@@ -2110,19 +2121,19 @@ redo:
 
 	/* Determine target state of the slab */
 	new.counters = old.counters;
-	if (freelist) {
+	if (freelist) { //freelist第一阶段前至少拥有1个以上的可用object
 		new.inuse--;
 		set_freepointer(s, freelist, old.freelist);
 		new.freelist = freelist;
 	} else
-		new.freelist = old.freelist;
+		new.freelist = old.freelist; //freelist第一阶段前没有可用object
 
 	new.frozen = 0;
 
 	if (!new.inuse && n->nr_partial >= s->min_partial)
-		m = M_FREE;
+		m = M_FREE; //empty slab直接释放
 	else if (new.freelist) {
-		m = M_PARTIAL;
+		m = M_PARTIAL; //加入到per node partial列表
 		if (!lock) {
 			lock = 1;
 			/*
@@ -2133,7 +2144,7 @@ redo:
 			spin_lock(&n->list_lock);
 		}
 	} else {
-		m = M_FULL;
+		m = M_FULL; //full slab
 		if (kmem_cache_debug(s) && !lock) {
 			lock = 1;
 			/*
@@ -2492,6 +2503,7 @@ static inline void *new_slab_objects(struct kmem_cache *s, gfp_t flags,
 		 * No other reference to the page yet so we can
 		 * muck around with it freely without cmpxchg
 		 */
+        /*将page->freelist中的object移动到per cpu free_list*/
 		freelist = page->freelist;
 		page->freelist = NULL;
 
@@ -2586,6 +2598,7 @@ redo:
 
 		if (unlikely(!node_match(page, searchnode))) {
 			stat(s, ALLOC_NODE_MISMATCH);
+            /*移除当前cpu slab,还回到page->freelist,page根椐不同情况free 或者加入到 per node partial列表中*/
 			deactivate_slab(s, page, c->freelist, c);
 			goto new_slab;
 		}
@@ -2607,7 +2620,9 @@ redo:
 	if (freelist)
 		goto load_freelist;
     
-    /*slab在分配完所有object后并非立即变成full slab,而是等下一次分配的时候才成full slab(frozen==0)*/
+    /* 
+      slab在分配完所有object后并非立即变成full slab,而是等下一次分配的时候才成full slab(frozen==0)
+    */
 	freelist = get_freelist(s, page);
 
 	if (!freelist) {
@@ -2994,7 +3009,7 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 	}
 
     /*
-    empty slab且超过partial slab数量的阈值,将其释放
+    empty slab且超过per node partial slab数量的阈值,将其释放
     */
 	if (unlikely(!new.inuse && n->nr_partial >= s->min_partial))
 		goto slab_empty;
