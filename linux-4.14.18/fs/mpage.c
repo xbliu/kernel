@@ -594,7 +594,7 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 	int op_flags = wbc_to_write_flags(wbc);
 
     /* 
-    a1.page 有buffer_head的情况处理 
+    a1.page有buffer_head的情况处理 
     1)page中的脏block连续则一起处理,否则分开处理 
     2)page中脏block不连续的情况有: 
         i: 上一个block unmapped接着的下一个block mapped
@@ -673,6 +673,7 @@ static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 
 		map_bh.b_state = 0;
 		map_bh.b_size = 1 << blkbits;
+        /*写时空洞块需要分配,所以没有readpage的unmapped的状况,但多了新建块的状态*/
 		if (mpd->get_block(inode, block_in_file, &map_bh, 1)) //获取物理扇区号
 			goto confused;
 		if (buffer_new(&map_bh))

@@ -2049,8 +2049,8 @@ iomap_to_bh(struct inode *inode, sector_t block, struct buffer_head *bh,
 int __block_write_begin_int(struct page *page, loff_t pos, unsigned len,
 		get_block_t *get_block, struct iomap *iomap)
 {
-	unsigned from = pos & (PAGE_SIZE - 1);
-	unsigned to = from + len;
+	unsigned from = pos & (PAGE_SIZE - 1); /*页内偏移*/
+	unsigned to = from + len; /*页内终点*/
 	struct inode *inode = page->mapping->host;
 	unsigned block_start, block_end;
 	sector_t block;
