@@ -835,7 +835,7 @@ struct file_ra_state {
 	unsigned int async_size;	/* do asynchronous readahead when
 					   there are only # of pages ahead */ //异步预读窗口页面数量 
 
-	unsigned int ra_pages;		/* Maximum readahead window */ //预讯窗口页面最大数量 0预读关闭
+	unsigned int ra_pages;		/* Maximum readahead window */ //预读窗口页面最大数量 0预读关闭
 	unsigned int mmap_miss;		/* Cache miss stat for mmap accesses */ //预读失效计数
 	loff_t prev_pos;		/* Cache last read() position */ //cache中上一次读取的位置
 };
