@@ -1090,15 +1090,15 @@ cfq_choose_req(struct cfq_data *cfqd, struct request *rq1, struct request *rq2, 
 #define CFQ_RQ2_WRAP	0x02 /* request 2 wraps */
 	unsigned wrap = 0; /* bit mask: requests behind the disk head? */
 	/*
-	rq1:next rq2:prev
-	a.next为空或者两者相等选prev
+	rq1:next rq2:cur
+	a.next为空或者两者相等选cur
 	*/
 	if (rq1 == NULL || rq1 == rq2)
 		return rq2;
-	/*a2.prev为空选next*/
+	/*a2.cur为空选next*/
 	if (rq2 == NULL)
 		return rq1;
-	/*a3.next prev中优先选择同步操作,都是同步next比prev优先选择*/
+	/*a3.next cur中优先选择同步操作,都是同步next比cur优先选择*/
 	if (rq_is_sync(rq1) != rq_is_sync(rq2))
 		return rq_is_sync(rq1) ? rq1 : rq2;
 	/*a4.优先选择REQ_PRIO的操作*/
@@ -2267,7 +2267,8 @@ static void cfq_service_tree_add(struct cfq_data *cfqd, struct cfq_queue *cfqq,
 	}
 
 	/*
-	a3.若新的与旧的service_tree或rb_key不一样则从旧的service_tree中移除
+	a3.若新的与旧的service_tree rb_key不一样则从旧的service_tree中移除
+	<不在同一service_tree同一位置则需清除旧的所在位置>
 	*/
 	if (!RB_EMPTY_NODE(&cfqq->rb_node)) {
 		new_cfqq = 0;

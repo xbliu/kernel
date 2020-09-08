@@ -1030,6 +1030,7 @@ vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void 
 	if (!type)
 		return ERR_PTR(-ENODEV);
 
+	/*分配mount*/
 	mnt = alloc_vfsmnt(name);
 	if (!mnt)
 		return ERR_PTR(-ENOMEM);
@@ -1037,6 +1038,7 @@ vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void 
 	if (flags & SB_KERNMOUNT)
 		mnt->mnt.mnt_flags = MNT_INTERNAL;
 
+	/*挂载*/
 	root = mount_fs(type, flags, name, data);
 	if (IS_ERR(root)) {
 		mnt_free_id(mnt);
@@ -1044,6 +1046,7 @@ vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void 
 		return ERR_CAST(root);
 	}
 
+	/*初始化mount*/
 	mnt->mnt.mnt_root = root;
 	mnt->mnt.mnt_sb = root->d_sb;
 	mnt->mnt_mountpoint = mnt->mnt.mnt_root;
@@ -3227,6 +3230,7 @@ static void __init init_mount_tree(void)
 	type = get_fs_type("rootfs");
 	if (!type)
 		panic("Can't find rootfs type");
+	/*根文件系统挂载*/
 	mnt = vfs_kern_mount(type, 0, "rootfs", NULL);
 	put_filesystem(type);
 	if (IS_ERR(mnt))
@@ -3243,6 +3247,7 @@ static void __init init_mount_tree(void)
 	root.dentry = mnt->mnt_root;
 	mnt->mnt_flags |= MNT_LOCKED;
 
+	/*设置当前进程的根目录与当前目录*/
 	set_fs_pwd(current->fs, &root);
 	set_fs_root(current->fs, &root);
 }

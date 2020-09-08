@@ -19,23 +19,24 @@ slice_idle
 This specifies how long CFQ should idle for next request on certain cfq queues
 (for sequential workloads) and service trees (for random workloads) before
 queue is expired and CFQ selects next queue to dispatch from.
-指定在队列到期且cfq选择下一个队列进行调度之前,为下一个在某些cfq队列(对于顺序工作负载)与
-service tree(对于随机工作负载)的请求处理空闲多长时间.
+这指定CFQ在确定的CFQ队列上（对于顺序工作负载）的下一个请求应空闲多长时间
+以及在队列过期之前，服务树（对于随机工作负载),CFQ选择要从中分派的下一个队列。
 
 By default slice_idle is a non-zero value. That means by default we idle on
 queues/service trees. This can be very helpful on highly seeky media like
 single spindle SATA/SAS disks where we can cut down on overall number of
 seeks and see improved throughput.
-默认的slice_idle为非零值.这意味着默认情况下在queue/service tree上处于空闲状态.这对于
-频繁寻道的媒介(如单主轴 SATA/SAS 磁盘)非常有用,可以减少寻道的总数并提高吞吐量.
+默认情况下，slice_idle是一个非零值。这意味着默认情况下我们在队列/服务树会空闲。
+这对于单轴SATA/SAS磁盘等高稳定性介质非常有用，我们可以减少总的寻道次数，并提高吞吐量。
 
 Setting slice_idle to 0 will remove all the idling on queues/service tree
 level and one should see an overall improved throughput on faster storage
 devices like multiple SATA/SAS disks in hardware RAID configuration. The down
 side is that isolation provided from WRITES also goes down and notion of
 IO priority becomes weaker.
-slice_idle设为0将移除在queue/service tree级别的所有空闲且在更快的设备上看到总体吞吐量的提高
-如硬件RAID配置中的多个SATA/SAS 磁盘.另一方面写隔离也将下降,IO优先级的概念也会变弱.
+将slice_idle设置为0将删除队列/服务树上的所有空闲。在更快的存储上，例如硬件RAID配置中的
+多个SATA/SAS磁盘等设备，我们应该看到总体吞吐量的提高。不利的一面是，写操作提供的隔离也会降低，
+IO优先级的概念会变得更弱。
 
 So depending on storage and workload, it might be useful to set slice_idle=0.
 In general I think for SATA/SAS disks and software RAID of SATA/SAS disks
@@ -43,36 +44,51 @@ keeping slice_idle enabled should be useful. For any configurations where
 there are multiple spindles behind single LUN (Host based hardware RAID
 controller or for storage arrays), setting slice_idle=0 might end up in better
 throughput and acceptable latencies.
+因此，根据存储和工作负载的不同，将slice_idle设置为0可能会很有用。
+一般来说，我认为对于SATA/SAS磁盘和SATA/SAS磁盘的软件RAID，保持slice_idle开启应该很有用。
+对于任何配置单个LUN（基于主机的硬件RAID），设置slice_idle=0可能会得到更好吞吐量和可接受的延迟的结果。
 
 back_seek_max
 -------------
 This specifies, given in Kbytes, the maximum "distance" for backward seeking.
 The distance is the amount of space from the current head location to the
 sectors that are backward in terms of distance.
+这指定了以KB为单位，向后搜索的最大“距离”。
+这个距离是从当前头部位置到在距离方面向后的扇区
 
 This parameter allows the scheduler to anticipate requests in the "backward"
 direction and consider them as being the "next" if they are within this
 distance from the current head location.
+此参数允许调度器在后面方向中预测请求
+如果他们在这个范围内，就把他们当作“下一个”与当前头部位置的距离。
 
 back_seek_penalty
 -----------------
 This parameter is used to compute the cost of backward seeking. If the
 backward distance of request is just 1/back_seek_penalty from a "front"
 request, then the seeking cost of two requests is considered equivalent.
+此参数用于计算反向搜索的成本。如果请求的后向距离仅为“前”请求的1/back_seek_penalty，
+则认为两个请求的搜索成本相等。
 
 So scheduler will not bias toward one or the other request (otherwise scheduler
 will bias toward front request). Default value of back_seek_penalty is 2.
+所以调度器不会偏向一个或另一个请求（否则调度器会偏向前请求）。
+back_seek_penalty的默认值是2.
 
 fifo_expire_async
 -----------------
 This parameter is used to set the timeout of asynchronous requests. Default
 value of this is 248ms.
+此参数用于设置异步请求的超时。
+默认值是248ms。
 
 fifo_expire_sync
 ----------------
 This parameter is used to set the timeout of synchronous requests. Default
 value of this is 124ms. In case to favor synchronous requests over asynchronous
 one, this value should be decreased relative to fifo_expire_async.
+此参数用于设置同步请求的超时。默认值是124ms. 
+如果希望同步请求优于异步请求，则应当减少fifo_expire_sync这个值
 
 group_idle
 -----------
@@ -86,8 +102,13 @@ IO controller working.
 Not idling on individual queues in the group will dispatch requests from
 multiple queues in the group at the same time and achieve higher throughput
 on higher end storage.
+此参数强制在CFQ组级别而不是CFQ队列级别的空闲。这是在观察到高端存储由于顺序队列上的空闲而出现瓶颈并
+允许从单个队列进行调度后引入的。这个参数的思想是它可以在slice_idle=0和group_idle=8的情况下运行
+，使空闲不会在组中的单个队列上发生，而是在组中整体发生，从而仍然保持IO控制器工作。
+在组中的单个队列上不空闲，同时从组中的多个队列分派请求，并在更高端的存储上实现更高的吞吐量。
 
 Default value for this parameter is 8ms.
+参数的默认值是8ms.
 
 low_latency
 -----------
@@ -96,8 +117,13 @@ scheduler. If enabled, CFQ tries to recompute the slice time for each process
 based on the target_latency set for the system. This favors fairness over
 throughput. Disabling low latency (setting it to 0) ignores target latency,
 allowing each process in the system to get a full time slice.
+这个参数被用于开启/关闭CFQ调度器的low_latency模式，
+如果开启，CFQ将会尝试重新计算每个进程时间片，基于系统设置的low_latency。
+这有利于公平而不是吞吐量。关闭low latency (设置成0) 忽略目标延迟,
+将会允许系统中的每一个进程获得完整的时间片
 
 By default low latency mode is enabled.
+默认low latency模式是开启的.
 
 target_latency
 --------------
@@ -106,18 +132,26 @@ latency mode is enabled. It will ensure that sync requests have an estimated
 latency. But if sequential workload is higher(e.g. sequential read),
 then to meet the latency constraints, throughput may decrease because of less
 time for each process to issue I/O request before the cfq queue is switched.
+这个参数用于计算每一个进程获得的时间片，在开启CFQ的latency模式。 
+它将确保同步的请求有一个估计的延迟。 但是顺序工作更加重要（例如顺序读）,
+然后为了满足延迟限制，由于每个进程在交换cfq队列之前，发出I/O请求的时间减少，吞吐量可能会降低。
 
 Though this can be overcome by disabling the latency_mode, it may increase
 the read latency for some applications. This parameter allows for changing
 target_latency through the sysfs interface which can provide the balanced
 throughput and read latency.
+虽然这可以通过禁用latency_mode来克服，但它可能会增加某些应用程序的读取延迟。
+此参数允许通过sysfs接口更改target_latency，该接口可以提供平衡的吞吐量和读取延迟。
 
 Default value for target_latency is 300ms.
+默认值target_latency是300ms.
 
 slice_async
 -----------
 This parameter is same as of slice_sync but for asynchronous queue. The
 default value is 40ms.
+此参数和slice_sync一样，但是只是用于异步队列
+默认值是40ms.
 
 slice_async_rq
 --------------
@@ -125,6 +159,8 @@ This parameter is used to limit the dispatching of asynchronous request to
 device request queue in queue's slice time. The maximum number of request that
 are allowed to be dispatched also depends upon the io priority. Default value
 for this is 2.
+这个参数用于限制异步请求分发到设备的请求队列，在队列中的时间片，允许分派的最大请求数也取决于io优先级。. 
+默认值是2.
 
 slice_sync
 ----------
@@ -132,11 +168,16 @@ When a queue is selected for execution, the queues IO requests are only
 executed for a certain amount of time(time_slice) before switching to another
 queue. This parameter is used to calculate the time slice of synchronous
 queue.
+当某个队列被选择执行的时候, 这个队列IO请求，只在一个确定的时间片里去执行，在切换到另外一个队列之前。
+这个参数就是用于同步队列的时间片的计算
 
 time_slice is computed using the below equation:-
 time_slice = slice_sync + (slice_sync/5 * (4 - prio)). To increase the
 time_slice of synchronous queue, increase the value of slice_sync. Default
 value is 100ms.
+时间片的计算用以下方程式-
+time_slice = slice_sync + (slice_sync/5 * (4 - prio)). 
+为了增加同步IO的时间片，增加slice_sync的值 默认值100ms.
 
 quantum
 -------
@@ -144,11 +185,16 @@ This specifies the number of request dispatched to the device queue. In a
 queue's time slice, a request will not be dispatched if the number of request
 in the device exceeds this parameter. This parameter is used for synchronous
 request.
+这个参数指定了被转发到设备队列的数量. 
+在一个队列的时间片中，如果转发给设备队列的数量超过了这个数，另一个请求将不会出现.
+这个参数用户同步请求
 
 In case of storage with several disk, this setting can limit the parallel
 processing of request. Therefore, increasing the value can improve the
 performance although this can cause the latency of some I/O to increase due
 to more number of requests.
+如果存储有多个磁盘，此设置可以限制请求的并行处理。因此，增加该值可以提高性能，
+尽管这可能会导致一些I/O的延迟由于请求的数量增加而增加
 
 CFQ Group scheduling
 ====================
@@ -161,12 +207,20 @@ them, so the former two configure how much proportion the cgroup as a
 whole is entitled to at its parent's level while the latter two
 configure how much proportion the tasks in the cgroup have compared to
 its direct children.
+CFQ支持blkio cgroup，在每个blkio cgroup目录中有"blkio."前缀的文件。
+它是基于权重基础，有四个旋钮对于配置-权重[_设备]和叶权重[_设备]。
+内部cgroup节点（带有子节点的节点）也可以在其中包含任务，
+前两个配置cgroup作为一个整体在其父级有权享有的比例，
+后两个配置cgroup中的其直接子任务相比所占的比例。
 
 Another way to think about it is assuming that each internal node has
 an implicit leaf child node which hosts all the tasks whose weight is
 configured by leaf_weight[_device]. Let's assume a blkio hierarchy
 composed of five cgroups - root, A, B, AA and AB - with the following
 weights where the names represent the hierarchy.
+另一种思考方法是假设每个内部节点一个隐式的叶子节点，它承载所有的任务，其权重为
+叶权重[设备]配置。假设一个blkio层次结构由根、A、B、AA和AB五个cgroups组成
+下面表示每个名称的权重。
 
         weight leaf_weight
  root :  125    125
@@ -181,6 +235,9 @@ and AB have no child and thus its tasks have no children cgroup to
 compete with. They always get 100% of what the cgroup won at the
 parent level. Considering only the weights which matter, the hierarchy
 looks like the following.
+根从来没有一个父母使其重量是毫无意义的。向后兼容性，权重始终与叶权重保持同步。
+B、AA、AB没有子代，因此它的任务没有子代与竞争。他们总是能得到cgroup在父级100%。
+仅考虑影响的权重，层次结构如下所示。
 
           root
        /    |   \
@@ -192,8 +249,10 @@ looks like the following.
 
 If all cgroups have active IOs and competing with each other, disk
 time will be distributed like the following.
+如果所有的cgroup都有活动的IOs并且彼此竞争，那么磁盘时间将按如下方式分配：
 
 Distribution below root. The total active weight at this level is
+分布在根下。此级别的总有效重量为
 A:500 + B:250 + C:125 = 875.
 
  root-leaf :   125 /  875      =~ 14%
@@ -202,6 +261,7 @@ A:500 + B:250 + C:125 = 875.
 
 A has children and further distributes its 57% among the children and
 the implicit leaf node. The total active weight at this level is
+A有孩子，并进一步将其57%分配给孩子隐式叶节点。此级别的总有效重量为
 AA:500 + AB:1000 + A-leaf:750 = 2250.
 
  A-leaf    : ( 750 / 2250) * A =~ 19%
@@ -209,6 +269,7 @@ AA:500 + AB:1000 + A-leaf:750 = 2250.
  AB(-leaf) : (1000 / 2250) * A =~ 25%
 
 CFQ IOPS Mode for group scheduling
+组调度的CFQ-IOPS模式
 ===================================
 Basic CFQ design is to provide priority based time slices. Higher priority
 process gets bigger time slice and lower priority process gets smaller time
@@ -216,22 +277,32 @@ slice. Measuring time becomes harder if storage is fast and supports NCQ and
 it would be better to dispatch multiple requests from multiple cfq queues in
 request queue at a time. In such scenario, it is not possible to measure time
 consumed by single queue accurately.
+基本的CFQ设计是提供基于优先级的时间片。更高优先级进程的时间片越大，优先级越低进程的时间篇越短。
+如果存储速度快并且支持NCQ和最好在一次请求队列中，转发来自多个cfq队列的多个请求。
+在这种情况下，不可能精确测量被单个队列消耗时间。
 
 What is possible though is to measure number of requests dispatched from a
 single queue and also allow dispatch from multiple cfq queue at the same time.
 This effectively becomes the fairness in terms of IOPS (IO operations per
 second).
+不过，可以测量从单个队列发出的请求数，同时允许从多个cfq队列发出，
+这就有效地提高了IOPS（IO operations per second）的公平性。
 
 If one sets slice_idle=0 and if storage supports NCQ, CFQ internally switches
 to IOPS mode and starts providing fairness in terms of number of requests
 dispatched. Note that this mode switching takes effect only for group
 scheduling. For non-cgroup users nothing should change.
+如果设置slice_idle=0，并且存储支持NCQ，CFQ会在内部切换到IOPS模式，并根据分派的请求数提供公平性。
+注意，此模式切换仅对组调度有效。对于非cgroup用户，不应更改任何内容。
 
 CFQ IO scheduler Idling Theory
+CFQ-IO调度器空闲理论
 ===============================
 Idling on a queue is primarily about waiting for the next request to come
 on same queue after completion of a request. In this process CFQ will not
 dispatch requests from other cfq queues even if requests are pending there.
+在队列中空闲主要是为了等待下一个请求的到来在同一队列上，在请求完成后之后。
+在此过程中，CFQ不会从其他cfq队列中分派请求，即使在处于挂起状态的请求在其他cfq队列。
 
 The rationale behind idling is that it can cut down on number of seeks
 on rotational media. For example, if a process is doing dependent
@@ -239,13 +310,19 @@ sequential reads (next read will come on only after completion of previous
 one), then not dispatching request from other queue should help as we
 did not move the disk head and kept on dispatching sequential IO from
 one queue.
+空转的基本原理是它可以减少旋转介质上的寻道次数。例如，如果一个进程正在执行相关的顺序读取
+（下一次读取仅在前一次读取完成后才开始），那么不从其他队列发送请求应该会有所帮助，
+因为我们没有移动磁盘头，而是继续从一个队列发送顺序IO。
 
 CFQ has following service trees and various queues are put on these trees.
+CFQ有以下服务树，并且在这些树上放置各种队列。
 
 	sync-idle	sync-noidle	async
 
 All cfq queues doing synchronous sequential IO go on to sync-idle tree.
 On this tree we idle on each queue individually.
+所有执行同步顺序IO的cfq队列都将会到sync-idle树。
+在这棵树上，我们分别在每个队列上空闲。
 
 All synchronous non-sequential queues go on sync-noidle tree. Also any
 synchronous write request which is not marked with REQ_IDLE goes on this
@@ -253,15 +330,22 @@ service tree. On this tree we do not idle on individual queues instead idle
 on the whole group of queues or the tree. So if there are 4 queues waiting
 for IO to dispatch we will idle only once last queue has dispatched the IO
 and there is no more IO on this service tree.
+所有同步非顺序队列都在sync-noidle树上。还有任何未标记REQ_IDLE的同步写入请求在此进行服务树。
+在此树上，我们不在单个队列上空闲，而是在空闲在整个队列组或树上。所以如果有4个排队等候分派的IO，
+只有在最后一个队列分派最后一个IO后，我们才会空闲。
 
 All async writes go on async service tree. There is no idling on async
 queues.
+所有异步写会到async服务树，不会有空闲在异步的队列
 
 CFQ has some optimizations for SSDs and if it detects a non-rotational
 media which can support higher queue depth (multiple requests at in
 flight at a time), then it cuts down on idling of individual queues and
 all the queues move to sync-noidle tree and only tree idle remains. This
 tree idling provides isolation with buffered write queues on async tree.
+CFQ对ssd进行了一些优化，如果它检测到一个支持更高队列深度的非旋转媒体（一次运行多个请求），
+那么它就减少了单个队列的空闲，所有队列都移动到同步noidle树，只剩下树空闲。
+此树空闲为异步树上的缓冲写队列提供隔离。
 
 FAQ
 ===
@@ -291,9 +375,26 @@ A1. We only do tree idle (all queues on sync-noidle tree) on queues not marked
     Hence doing tree idling on threads using !REQ_IDLE flag on requests
     provides isolation from multiple sequential readers and at the same
     time we do not idle on individual threads.
+ Q1. 为什么要在所有未标记REQ_IDLE的队列上空闲（树空闲）。
+ A1. 我们只对未标记REQ_IDLE的队列执行树空闲（sync-noidle树上的所有队列）。
+     这有助于为所有同步空闲队列提供隔离。否则，在存在许多顺序读的情况下，其他异步的IO可能无法获得公平的磁盘份额。
+     
+     举个例子，假如有10个顺序读正在处理IO，每拿到了100ms。如果一个非REQ_IDLE请求来了，他将会在1秒以后野蛮的
+     调度。如果在非REQ_IDLE请求完成之后，我们不空闲，几毫秒后另外一个非REQ_IDLE请求来了，他将在再次在1秒之后
+     被调度。重复的，注意一个工作负载如何丢失其磁盘共享并遭受损失，由于多个顺序读。
+
+     fsync可以生成依赖的IO，其中一堆数据是在fsync的上下文中写入的，然后再写入一些日志数据。
+     日志数据只有在fsync完成其IO（至少对于ext4来说是这样）之后才会出现。
+     现在如果有人决定不空闲的fsync线程由于没有!REQ_IDLE，则下次日志写入将不会被安排为另一秒。
+     如果一个进程执行的fsync很小，那么在有多个顺序读的情况下，这个进程将受到严重影响。
+
+     因此在所有非REQ_IDLE的线程上执行树空闲，提供了与多个顺序读的隔离，同时我们不在单个线程上空闲。	
 
 Q2. When to specify REQ_IDLE
 A2. I would think whenever one is doing synchronous write and expecting
     more writes to be dispatched from same context soon, should be able
     to specify REQ_IDLE on writes and that probably should work well for
     most of the cases.
+Q2. 何时指定REQ_IDLE
+A2. 我认为，当一个人正在进行同步写操作，并且希望很快从同一个上下文发送更多的写操作时，
+     应该能够在写操作时指定REQ_IDLE，这可能在大多数情况下都能很好地工作。

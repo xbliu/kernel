@@ -597,9 +597,7 @@ repeat:
 	if (base < end) {
 		nr_new++;
 		/*
-		base分两种情况:
-		1)base未从重新计算过 [base,end]与已有内存块区域未存在交叉
-		2)base重新计算过 [base,end] 与已有内存区域过最后剩余未交叉的部分
+		base重新计算过 [base,end] 与已有内存区域过最后剩余未交叉的部分
 		*/
 		if (insert)
 			memblock_insert_region(type, idx, base, end - base,
@@ -948,18 +946,22 @@ void __init_memblock __next_mem_range(u64 *idx, int nid, ulong flags,
 		int	    m_nid = memblock_get_region_node(m);
 
 		/* only memory regions are associated with nodes, check it */
+		//内存区块必须属于指定的 node
 		if (nid != NUMA_NO_NODE && nid != m_nid)
 			continue;
 
 		/* skip hotpluggable memory regions if needed */
+		//内存区块不是热插拔的
 		if (movable_node_is_enabled() && memblock_is_hotpluggable(m))
 			continue;
 
 		/* if we want mirror memory skip non-mirror memory regions */
+		//内存区块不是 non-mirror 的
 		if ((flags & MEMBLOCK_MIRROR) && !memblock_is_mirror(m))
 			continue;
 
 		/* skip nomap memory unless we were asked for it explicitly */
+		//内存区块不能是 MEMBLOCK_NOMAP 的
 		if (!(flags & MEMBLOCK_NOMAP) && memblock_is_nomap(m))
 			continue;
 
