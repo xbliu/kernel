@@ -111,7 +111,10 @@ deadline_add_request(struct request_queue *q, struct request *rq)
 	 * set expire time and add to fifo list
 	 */
 	rq->fifo_time = jiffies + dd->fifo_expire[data_dir];
-	list_add_tail(&rq->queuelist, &dd->fifo_list[data_dir]); //a3)记录req的超时时间并加入到fifo列表中
+    /*
+    a3)记录req的超时时间并加入到fifo列表中,同一数据方向fifo_expire相同故先添加先超时,每次都添加到fifo_list尾部
+    */
+	list_add_tail(&rq->queuelist, &dd->fifo_list[data_dir]); 
 }
 
 /*
@@ -324,7 +327,7 @@ dispatch_writes:
 	a3.取request规则,批量操作清0
 	1)从fifo队列中取 
 	   <同方向有req<fifo list第一个>等待超时>
-	   <与上一个请求不在同一数据方向>
+	   <无可用下一个派发请求>
 	2)继续从同数据方向取下一个
 	*/
 dispatch_find_request:

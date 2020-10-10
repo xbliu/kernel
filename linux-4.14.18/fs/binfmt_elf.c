@@ -693,6 +693,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	unsigned long reloc_func_desc __maybe_unused = 0;
 	int executable_stack = EXSTACK_DEFAULT;
 	struct pt_regs *regs = current_pt_regs();
+    /*elf头结构*/
 	struct {
 		struct elfhdr elf_ex;
 		struct elfhdr interp_elf_ex;
@@ -707,13 +708,40 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	}
 	
 	/* Get the exec-header */
+    /*
+    do_execve--->do_execveat_common--->prepare_binprm(bprm) 
+    已经将elf的前 128 byte读入了bprm->buf 
+    1)获取elf头 eg:
+    ELF Header:
+      Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 
+      Class:                             ELF64
+      Data:                              2's complement, little endian
+      Version:                           1 (current)
+      OS/ABI:                            UNIX - System V
+      ABI Version:                       0
+      Type:                              EXEC (Executable file)
+      Machine:                           AArch64
+      Version:                           0x1
+      Entry point address:               0x400660
+      Start of program headers:          64 (bytes into file)
+      Start of section headers:          8080 (bytes into file)
+      Flags:                             0x0
+      Size of this header:               64 (bytes)
+      Size of program headers:           56 (bytes)
+      Number of program headers:         8
+      Size of section headers:           64 (bytes)
+      Number of section headers:         28
+      Section header string table index: 27 
+    */
 	loc->elf_ex = *((struct elfhdr *)bprm->buf);
 
 	retval = -ENOEXEC;
 	/* First of all, some simple consistency checks */
+    /*2)检测魔术是否匹配 即是否是elf格式文件*/
 	if (memcmp(loc->elf_ex.e_ident, ELFMAG, SELFMAG) != 0)
 		goto out;
 
+    /*3)可执行文件或者动态库才能加载*/
 	if (loc->elf_ex.e_type != ET_EXEC && loc->elf_ex.e_type != ET_DYN)
 		goto out;
 	if (!elf_check_arch(&loc->elf_ex))
@@ -721,6 +749,29 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	if (!bprm->file->f_op->mmap)
 		goto out;
 
+    /*
+    4)获取程序头 eg: 
+    Program Headers:
+      Type           Offset             VirtAddr           PhysAddr
+                     FileSiz            MemSiz              Flags  Align
+      PHDR           0x0000000000000040 0x0000000000400040 0x0000000000400040
+                     0x00000000000001c0 0x00000000000001c0  R E    8
+      INTERP         0x0000000000000200 0x0000000000400200 0x0000000000400200
+                     0x000000000000001b 0x000000000000001b  R      1
+          [Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+      LOAD           0x0000000000000000 0x0000000000400000 0x0000000000400000
+                     0x0000000000000a68 0x0000000000000a68  R E    10000
+      LOAD           0x0000000000000df0 0x0000000000410df0 0x0000000000410df0
+                     0x0000000000000270 0x0000000000000280  RW     10000
+      DYNAMIC        0x0000000000000e08 0x0000000000410e08 0x0000000000410e08
+                     0x00000000000001d0 0x00000000000001d0  RW     8
+      NOTE           0x000000000000021c 0x000000000040021c 0x000000000040021c
+                     0x0000000000000020 0x0000000000000020  R      4
+      GNU_STACK      0x0000000000000000 0x0000000000000000 0x0000000000000000
+                     0x0000000000000000 0x0000000000000000  RW     10
+      GNU_RELRO      0x0000000000000df0 0x0000000000410df0 0x0000000000410df0
+                     0x0000000000000210 0x0000000000000210  R      1 
+    */
 	elf_phdata = load_elf_phdrs(&loc->elf_ex, bprm->file);
 	if (!elf_phdata)
 		goto out;
@@ -734,6 +785,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	start_data = 0;
 	end_data = 0;
 
+    /*加载解释器*/
 	for (i = 0; i < loc->elf_ex.e_phnum; i++) {
 		if (elf_ppnt->p_type == PT_INTERP) {
 			/* This is the program interpreter used for
@@ -746,11 +798,13 @@ static int load_elf_binary(struct linux_binprm *bprm)
 				goto out_free_ph;
 
 			retval = -ENOMEM;
+            /*分配空间*/
 			elf_interpreter = kmalloc(elf_ppnt->p_filesz,
 						  GFP_KERNEL);
 			if (!elf_interpreter)
 				goto out_free_ph;
 
+            /*读入解释器名*/
 			pos = elf_ppnt->p_offset;
 			retval = kernel_read(bprm->file, elf_interpreter,
 					     elf_ppnt->p_filesz, &pos);
@@ -764,6 +818,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 			if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')
 				goto out_free_interp;
 
+            /*打开解释器*/
 			interpreter = open_exec(elf_interpreter);
 			retval = PTR_ERR(interpreter);
 			if (IS_ERR(interpreter))
@@ -777,6 +832,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 			would_dump(bprm, interpreter);
 
 			/* Get the exec headers */
+            /*读入解析器文件elf 头部*/
 			pos = 0;
 			retval = kernel_read(interpreter, &loc->interp_elf_ex,
 					     sizeof(loc->interp_elf_ex), &pos);
@@ -852,6 +908,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 		goto out_free_dentry;
 
 	/* Flush all traces of the currently running executable */
+    /*5)释放空间、删除信号、关闭带有CLOSE_ON_EXEC标志的文件*/
 	retval = flush_old_exec(bprm);
 	if (retval)
 		goto out_free_dentry;
@@ -865,11 +922,13 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
 		current->flags |= PF_RANDOMIZE;
 
+    /*6)*/
 	setup_new_exec(bprm);
 	install_exec_creds(bprm);
 
 	/* Do this so that we can load the interpreter, if need be.  We will
 	   change some of these later */
+    /*7)为进程分配用户态堆栈，并塞入参数和环境变量*/
 	retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
 				 executable_stack);
 	if (retval < 0)
@@ -879,6 +938,19 @@ static int load_elf_binary(struct linux_binprm *bprm)
 
 	/* Now we do a little grungy work by mmapping the ELF image into
 	   the correct location in memory. */
+    /* 
+      8)装入目标程序的段segment (数据段与代码段)
+Section to Segment mapping:
+  Segment Sections...
+   00     
+   01     .interp 
+   02     .interp .note.ABI-tag .hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt .text .fini .rodata .eh_frame 
+   03     .init_array .fini_array .jcr .dynamic .got .got.plt .data .bss 
+   04     .dynamic 
+   05     .note.ABI-tag 
+   06     
+   07     .init_array .fini_array .jcr .dynamic .got 
+    */
 	for(i = 0, elf_ppnt = elf_phdata;
 	    i < loc->elf_ex.e_phnum; i++, elf_ppnt++) {
 		int elf_prot = 0, elf_flags;
@@ -987,6 +1059,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 			}
 		}
 
+        /*映射加载段*/
 		error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
 				elf_prot, elf_flags, total_size);
 		if (BAD_ADDR(error)) {
@@ -1006,8 +1079,18 @@ static int load_elf_binary(struct linux_binprm *bprm)
 			}
 		}
 		k = elf_ppnt->p_vaddr;
+        /*
+        代码区在进程空间的最前面，如果当前映射的这一段的开始位置还位于当前的代码区之前， 
+        那么代码区的开始位置应该还要向前移，至少移到这一段的位置上
+        (取最小的段地址作为代码段起始)
+        */
 		if (k < start_code)
 			start_code = k;
+        /*
+        如果当前映射的这一段的开始位置还位于当前的数据区之后，那么数据区的开始位置还应该向后移， 
+        至少移到这一段的位置上。这是因为数据区在可装载的段的最后，不应该有哪个段的位置比较数据区还靠后
+        (取最大的段地址作为数据段起始)
+        */
 		if (start_data < k)
 			start_data = k;
 
@@ -1026,12 +1109,31 @@ static int load_elf_binary(struct linux_binprm *bprm)
 
 		k = elf_ppnt->p_vaddr + elf_ppnt->p_filesz;
 
+        /*
+        elf_bss变量记录的是BSS区的开始位置。BSS区排在所有可加载段的后面，
+        即它的开始处也就是最后一个可加载段的结尾处。所以总是把当前加载段的结尾与它相比，
+        如果当前加载段的结尾比较靠后的话，则还需要把BSS区往后推 
+        (取最大文件段尾作为BSS段起始) 
+        */
 		if (k > elf_bss)
 			elf_bss = k;
+        /*
+        代码段 可执行
+        (取最大可执行的文件段尾作为可执行段的终止)
+        */
 		if ((elf_ppnt->p_flags & PF_X) && end_code < k)
 			end_code = k;
+        /*
+        数据段 可读写 
+        (取最大的文件段尾作为数据段的终止) 
+        */
 		if (end_data < k)
 			end_data = k;
+        /*
+        elf_brk变量记录的是堆(heap)的上边界，现在进程还没有运行起来，
+        没有从堆上面申请内存，所以堆的大小是0，堆的上边界与下边界重合，
+        而堆的位置还在BSS之后，即它的开始位置应该是BSS区的结构位置
+        */
 		k = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;
 		if (k > elf_brk) {
 			bss_prot = elf_prot;
@@ -1052,6 +1154,9 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	 * mapping in the interpreter, to make sure it doesn't wind
 	 * up getting placed where the bss needs to go.
 	 */
+    /* 
+     
+    */
 	retval = set_brk(elf_bss, elf_brk, bss_prot);
 	if (retval)
 		goto out_free_dentry;
