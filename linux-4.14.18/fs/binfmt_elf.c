@@ -222,6 +222,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 		return -EFAULT;
 
 	/* Create the ELF interpreter info */
+    /*1)存放elf info与argc argv*/
 	elf_info = (elf_addr_t *)current->mm->saved_auxv;
 	/* update AT_VECTOR_SIZE_BASE if the number of NEW_AUX_ENT() changes */
 #define NEW_AUX_ENT(id, val) \
@@ -277,10 +278,10 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	/* And advance past the AT_NULL entry.  */
 	ei_index += 2;
 
-	sp = STACK_ADD(p, ei_index);
+	sp = STACK_ADD(p, ei_index); //预留elf info栈空间
 
 	items = (argc + 1) + (envc + 1) + 1;
-	bprm->p = STACK_ROUND(sp, items);
+	bprm->p = STACK_ROUND(sp, items); //预留参数,环境变量栈空间
 
 	/* Point sp at the lowest address on the stack */
 #ifdef CONFIG_STACK_GROWSUP
@@ -295,6 +296,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 	 * Grow the stack manually; some architectures have a limit on how
 	 * far ahead a user-space access may be in order to grow the stack.
 	 */
+    /*2)扩充栈*/
 	vma = find_extend_vma(current->mm, bprm->p);
 	if (!vma)
 		return -EFAULT;
@@ -304,6 +306,7 @@ create_elf_tables(struct linux_binprm *bprm, struct elfhdr *exec,
 		return -EFAULT;
 
 	/* Populate list of argv pointers back to argv strings. */
+    /*3)参数,环境变量 elf_info 入栈*/
 	p = current->mm->arg_end = current->mm->arg_start;
 	while (argc-- > 0) {
 		size_t len;
@@ -939,18 +942,15 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	/* Now we do a little grungy work by mmapping the ELF image into
 	   the correct location in memory. */
     /* 
-      8)装入目标程序的段segment (数据段与代码段)
+      8)装入目标程序的loadable segment (数据段与代码段)
+      a.程序头表中的可加载段条目按p_vaddr升序排序显示
+      b.bss处于数据段的最末尾处,不占文件空间,从而使得在关联的程序头 项中p_memsz大于p_filesz
+      eg: (02 代码段 03 数据段)
 Section to Segment mapping:
   Segment Sections...
-   00     
-   01     .interp 
    02     .interp .note.ABI-tag .hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt .text .fini .rodata .eh_frame 
-   03     .init_array .fini_array .jcr .dynamic .got .got.plt .data .bss 
-   04     .dynamic 
-   05     .note.ABI-tag 
-   06     
-   07     .init_array .fini_array .jcr .dynamic .got 
-    */
+   03     .init_array .fini_array .jcr .dynamic .got .got.plt .data .bss
+*/
 	for(i = 0, elf_ppnt = elf_phdata;
 	    i < loc->elf_ex.e_phnum; i++, elf_ppnt++) {
 		int elf_prot = 0, elf_flags;
@@ -1079,17 +1079,13 @@ Section to Segment mapping:
 			}
 		}
 		k = elf_ppnt->p_vaddr;
-        /*
-        代码区在进程空间的最前面，如果当前映射的这一段的开始位置还位于当前的代码区之前， 
-        那么代码区的开始位置应该还要向前移，至少移到这一段的位置上
-        (取最小的段地址作为代码段起始)
+        /* 
+        代码段处于可装载段最前面,即最小段的地址为代码段开始地址
         */
 		if (k < start_code)
 			start_code = k;
-        /*
-        如果当前映射的这一段的开始位置还位于当前的数据区之后，那么数据区的开始位置还应该向后移， 
-        至少移到这一段的位置上。这是因为数据区在可装载的段的最后，不应该有哪个段的位置比较数据区还靠后
-        (取最大的段地址作为数据段起始)
+        /* 
+        数据段处理可装载段的最后,即最大段的地址为数据段的开始地址
         */
 		if (start_data < k)
 			start_data = k;
@@ -1107,34 +1103,29 @@ Section to Segment mapping:
 			goto out_free_dentry;
 		}
 
+        /*可装载段的段尾*/
 		k = elf_ppnt->p_vaddr + elf_ppnt->p_filesz;
 
-        /*
-        elf_bss变量记录的是BSS区的开始位置。BSS区排在所有可加载段的后面，
-        即它的开始处也就是最后一个可加载段的结尾处。所以总是把当前加载段的结尾与它相比，
-        如果当前加载段的结尾比较靠后的话，则还需要把BSS区往后推 
-        (取最大文件段尾作为BSS段起始) 
+        /* 
+        bss位于最大装载段(数据段)的末尾,即数据段的段尾为bss开始地址
         */
 		if (k > elf_bss)
 			elf_bss = k;
         /*
-        代码段 可执行
-        (取最大可执行的文件段尾作为可执行段的终止)
+        代码段 可读可执行 即可执行段的段尾为代码段的结束地址
         */
 		if ((elf_ppnt->p_flags & PF_X) && end_code < k)
 			end_code = k;
         /*
-        数据段 可读写 
-        (取最大的文件段尾作为数据段的终止) 
+        数据段 可读写 即数据段的末尾为数据段的结束地址
         */
 		if (end_data < k)
 			end_data = k;
         /*
-        elf_brk变量记录的是堆(heap)的上边界，现在进程还没有运行起来，
-        没有从堆上面申请内存，所以堆的大小是0，堆的上边界与下边界重合，
-        而堆的位置还在BSS之后，即它的开始位置应该是BSS区的结构位置
+        elf_brk表示堆(heap)的上边界 
+        堆位于bss之后,即bss的结束地址为brk的开始地址
         */
-		k = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;
+		k = elf_ppnt->p_vaddr + elf_ppnt->p_memsz; //可装载段在内存中结束地址(未初始化数据在文件中未占用空间)
 		if (k > elf_brk) {
 			bss_prot = elf_prot;
 			elf_brk = k;
@@ -1155,16 +1146,25 @@ Section to Segment mapping:
 	 * up getting placed where the bss needs to go.
 	 */
     /* 
-     
+    映射bss到进程空间(bss在elf文件中未占用空间)
     */
 	retval = set_brk(elf_bss, elf_brk, bss_prot);
 	if (retval)
 		goto out_free_dentry;
+    /*
+    bss区与data区在一页内交叉,则此页bss部分需要清0
+    (data是文件映射 bss为匿名映射)
+    */
 	if (likely(elf_bss != elf_brk) && unlikely(padzero(elf_bss))) {
 		retval = -EFAULT; /* Nobody gets to see this, but.. */
 		goto out_free_dentry;
 	}
 
+    /*
+    elf入口: 
+    1)解释器的入口 (含有动态链接库) 
+    2)可执行文件的入口 (不含动态链接库)
+    */
 	if (elf_interpreter) {
 		unsigned long interp_map_addr = 0;
 
@@ -1209,6 +1209,7 @@ Section to Segment mapping:
 		goto out;
 #endif /* ARCH_HAS_SETUP_ADDITIONAL_PAGES */
 
+    /*将参数、环境变量、elf info入栈,并扩充栈空间大小*/
 	retval = create_elf_tables(bprm, &loc->elf_ex,
 			  load_addr, interp_load_addr);
 	if (retval < 0)
@@ -1221,6 +1222,7 @@ Section to Segment mapping:
 	current->mm->start_stack = bprm->p;
 
 	if ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {
+        /*mm->brk之上加上一个随机数(page的整数倍)*/
 		current->mm->brk = current->mm->start_brk =
 			arch_randomize_brk(current->mm);
 #ifdef compat_brk_randomized
@@ -1251,6 +1253,7 @@ Section to Segment mapping:
 	ELF_PLAT_INIT(regs, reloc_func_desc);
 #endif
 
+    /*更新pc,sp寄存器,返回用户空间时从elf_entry(程序的入口)处执行*/
 	start_thread(regs, elf_entry, bprm->p);
 	retval = 0;
 out:
