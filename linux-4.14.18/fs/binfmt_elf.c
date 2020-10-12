@@ -925,7 +925,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
 		current->flags |= PF_RANDOMIZE;
 
-    /*6)*/
+    /*6)设置mmap layout等*/
 	setup_new_exec(bprm);
 	install_exec_creds(bprm);
 

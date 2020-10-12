@@ -2104,8 +2104,12 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 
 	/*
 	a1.get_area函数赋值:
-	1)默认是当前进程的get_unmapped_area
-	2)若是文件映射则f_op->get_unmapped_area,共享映射则shmem_get_unmapped_area(最终还是调用默认选择)
+    1)私有匿名映射(默认进程的get_area)则arch_get_unmapped_area_topdown/arch_get_unmapped_area) 
+        arch_pick_mmap_layout
+        --->
+            mm->get_unmapped_area = arch_get_unmapped_area_topdown/arch_get_unmapped_area;
+	2)文件映射则f_op->get_unmapped_area,
+    3)共享映射则shmem_get_unmapped_area
 	*/
 	get_area = current->mm->get_unmapped_area;
 	if (file) {
