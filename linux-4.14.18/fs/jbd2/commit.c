@@ -219,6 +219,9 @@ static int journal_submit_data_buffers(journal_t *journal,
 	struct address_space *mapping;
 
 	spin_lock(&journal->j_list_lock);
+	/*ext4_truncate/ext4_fallocate -->ext4_jbd2_inode_add_write (order模式) 
+	会将inode加入到t_inode_list中
+	*/
 	list_for_each_entry(jinode, &commit_transaction->t_inode_list, i_list) {
 		if (!(jinode->i_flags & JI_WRITE_DATA))
 			continue;
@@ -461,6 +464,10 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	 * that multiple jbd2_journal_get_write_access() calls to the same
 	 * buffer are perfectly permissible.
 	 */
+	/*
+	t_reserved_list队列上的缓冲区是本transaction已管理的、但是未修改的缓冲区。
+	既然未修改，则不必提交。
+	*/
 	while (commit_transaction->t_reserved_list) {
 		jh = commit_transaction->t_reserved_list;
 		JBUFFER_TRACE(jh, "reserved, unused: refile");
@@ -476,6 +483,11 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 			jh->b_committed_data = NULL;
 			jbd_unlock_bh_state(bh);
 		}
+		/*
+		b_next_transaction
+		==NULL 未修改 从transaction中移除
+		!= NULL 重入相应列表
+		*/
 		jbd2_journal_refile_buffer(journal, jh);
 	}
 
@@ -497,7 +509,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	jbd2_clear_buffer_revoked_flags(journal);
 
 	/*
-	 * Switch to a new revoke table.
+	 * Switch to a new revoke(撤销) table. 
 	 */
 	jbd2_journal_switch_revoke_table(journal);
 
@@ -512,6 +524,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	stats.run.rs_locked = jbd2_time_diff(stats.run.rs_locked,
 					     stats.run.rs_flushing);
 
+	/*将running transaction移到committing transaction上*/
 	commit_transaction->t_state = T_FLUSH;
 	journal->j_committing_transaction = commit_transaction;
 	journal->j_running_transaction = NULL;
@@ -526,11 +539,13 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	 * Now start flushing things to disk, in the order they appear
 	 * on the transaction lists.  Data blocks go first.
 	 */
+	/*将结点的数据刷入磁盘*/ 
 	err = journal_submit_data_buffers(journal, commit_transaction);
 	if (err)
 		jbd2_journal_abort(journal, err);
 
 	blk_start_plug(&plug);
+	/*撤销块写入日记*/
 	jbd2_journal_write_revoke_records(commit_transaction, &log_bufs);
 
 	jbd_debug(3, "JBD2: commit phase 2b\n");
@@ -558,6 +573,11 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	err = 0;
 	bufs = 0;
 	descriptor = NULL;
+	/*
+	按照写入日志的格式写入：描述符块、数据块、提交块
+	descriptor_block (data_blocks or revocation_block) [more data or revocations] commmit_block
+	[------------------------------One transaction-----------------------------]
+	*/
 	while (commit_transaction->t_buffers) {
 
 		/* Find the next buffer to be journaled... */
@@ -586,12 +606,12 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 
 		/* Make sure we have a descriptor block in which to
 		   record the metadata buffer. */
-
+		/*分配描述符block*/
 		if (!descriptor) {
 			J_ASSERT (bufs == 0);
 
 			jbd_debug(4, "JBD2: get descriptor\n");
-
+			/*为描述符分配一个可用块*/
 			descriptor = jbd2_journal_get_descriptor_buffer(
 							commit_transaction,
 							JBD2_DESCRIPTOR_BLOCK);
@@ -619,6 +639,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 
 		/* Where is the buffer to be written? */
 
+		/*为变化的数据块从日记区分配可用块*/
 		err = jbd2_journal_next_log_block(journal, &blocknr);
 		/* If the block mapping failed, just abandon the buffer
 		   and repeat this loop: we'll fall into the
@@ -646,6 +667,10 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 		 */
 		set_bit(BH_JWrite, &jh2bh(jh)->b_state);
 		JBUFFER_TRACE(jh, "ph3: write metadata");
+		/*
+		为变化的数据分配buffer_head,buffer_head所属设备指向日记区
+		并将其记录到wbuf[]中,后续一起写出
+		*/
 		flags = jbd2_journal_write_metadata_buffer(commit_transaction,
 						jh, &wbuf[bufs], blocknr);
 		if (flags < 0) {
@@ -662,7 +687,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 			tag_flag |= JBD2_FLAG_ESCAPE;
 		if (!first_tag)
 			tag_flag |= JBD2_FLAG_SAME_UUID;
-
+		/*写block tag:记录数据发生变化的块号*/
 		tag = (journal_block_tag_t *) tagp;
 		write_tag_block(journal, tag, jh2bh(jh)->b_blocknr);
 		tag->t_flags = cpu_to_be16(tag_flag);
@@ -681,7 +706,12 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 
 		/* If there's no more to do, or if the descriptor is full,
 		   let the IO rip! */
-
+		/*
+		1)达到了journal一次允许写出的缓冲区个数，
+		2)BJ_Metadata队列已经为空，
+	    3)描述符块已被journal_block_tag_t记录填满了
+		需进行提交
+		*/
 		if (bufs == journal->j_wbufsize ||
 		    commit_transaction->t_buffers == NULL ||
 		    space_left < tag_bytes + 16 + csum_size) {
@@ -691,11 +721,12 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 			/* Write an end-of-descriptor marker before
                            submitting the IOs.  "tag" still points to
                            the last tag we set up. */
-
+			/*标记tag结束*/
 			tag->t_flags |= cpu_to_be16(JBD2_FLAG_LAST_TAG);
 
 			jbd2_descriptor_block_csum_set(journal, descriptor);
 start_journal_io:
+			/*将数据回写到日记存储区*/
 			for (i = 0; i < bufs; i++) {
 				struct buffer_head *bh = wbuf[i];
 				/*
@@ -717,11 +748,13 @@ start_journal_io:
 
 			/* Force a new descriptor to be generated next
                            time round the loop. */
+            /*如果描述符块已被journal_block_tag_t记录填满了,则重新分配一个*/
 			descriptor = NULL;
 			bufs = 0;
 		}
 	}
 
+	/*等待文件的内容数据刷入磁盘*/
 	err = journal_finish_inode_data_buffers(journal, commit_transaction);
 	if (err) {
 		printk(KERN_WARNING
@@ -739,6 +772,7 @@ start_journal_io:
 	 * storage and we will be safe to update journal start in the
 	 * superblock with the numbers we get here.
 	 */
+	 /*计算是否更新日记的superblock*/
 	update_tail =
 		jbd2_journal_get_log_tail(journal, &first_tid, &first_block);
 
@@ -767,6 +801,7 @@ start_journal_io:
 		blkdev_issue_flush(journal->j_fs_dev, GFP_NOFS, NULL);
 
 	/* Done it all: now write the commit record asynchronously. */
+	/*日记区写入 commit 块*/	
 	if (jbd2_has_feature_async_commit(journal)) {
 		err = journal_submit_commit_record(journal, commit_transaction,
 						 &cbh, crc32_sum);
@@ -788,7 +823,10 @@ start_journal_io:
 	*/
 
 	jbd_debug(3, "JBD2: commit phase 3\n");
-
+	/*
+	jbd2_file_log_bh(&io_bufs, wbuf[bufs]) io_bufs列表上是日记块的buffer_head
+	等待元数据块缓冲区写入日志
+	*/
 	while (!list_empty(&io_bufs)) {
 		struct buffer_head *bh = list_entry(io_bufs.prev,
 						    struct buffer_head,
@@ -832,6 +870,10 @@ start_journal_io:
 	jbd_debug(3, "JBD2: commit phase 4\n");
 
 	/* Here we wait for the revoke record and descriptor record buffers */
+	/*
+	jbd2_file_log_bh(&log_bufs, descriptor) 
+	等待描述符块/撤销块写入日志
+	*/
 	while (!list_empty(&log_bufs)) {
 		struct buffer_head *bh;
 
@@ -843,6 +885,7 @@ start_journal_io:
 			err = -EIO;
 
 		BUFFER_TRACE(bh, "ph5: control buffer writeout done: unfile");
+		/*控制块已经写到日志中了,从transaction中删除*/
 		clear_buffer_jwrite(bh);
 		jbd2_unfile_log_bh(bh);
 		__brelse(bh);		/* One for getblk */
@@ -858,6 +901,7 @@ start_journal_io:
 	commit_transaction->t_state = T_COMMIT_JFLUSH;
 	write_unlock(&journal->j_state_lock);
 
+	/*将commit block同步地写到日志中*/
 	if (!jbd2_has_feature_async_commit(journal)) {
 		err = journal_submit_commit_record(journal, commit_transaction,
 						&cbh, crc32_sum);
@@ -879,6 +923,7 @@ start_journal_io:
 	 * erase checkpointed transactions from the log by updating journal
 	 * superblock.
 	 */
+	/*更新日记的superblock*/
 	if (update_tail)
 		jbd2_update_log_tail(journal, first_tid, first_block);
 
@@ -944,6 +989,11 @@ restart_loop:
 		}
 
 		spin_lock(&journal->j_list_lock);
+		/*
+		jh在旧的transaction的checkpoint队列上了,则从旧的transaction的checkpoint队列上删除
+		__jbd2_journal_insert_checkpoint --> jh->b_cp_transaction = transaction
+		如buffer_head提交transaction后再次更新
+		*/
 		cp_transaction = jh->b_cp_transaction;
 		if (cp_transaction) {
 			JBUFFER_TRACE(jh, "remove from old cp transaction");
@@ -990,6 +1040,7 @@ restart_loop:
 
 		if (buffer_jbddirty(bh)) {
 			JBUFFER_TRACE(jh, "add to new checkpointing trans");
+			/* 该缓冲区仍为脏,则加入到本transaction的checkpoint队列上*/
 			__jbd2_journal_insert_checkpoint(jh, commit_transaction);
 			if (is_journal_aborted(journal))
 				clear_buffer_jbddirty(bh);
@@ -1029,6 +1080,7 @@ restart_loop:
 	 * Now recheck if some buffers did not get attached to the transaction
 	 * while the lock was dropped...
 	 */
+	/* 现在重新检查某些缓冲区在删除锁时是否未附加到事务,继续处理*/ 
 	if (commit_transaction->t_forget) {
 		spin_unlock(&journal->j_list_lock);
 		write_unlock(&journal->j_state_lock);
@@ -1038,6 +1090,7 @@ restart_loop:
 	/* Add the transaction to the checkpoint list
 	 * __journal_remove_checkpoint() can not destroy transaction
 	 * under us because it is not marked as T_FINISHED yet */
+	/*将本事务加入journal->j_checkpoint_transactions队列*/
 	if (journal->j_checkpoint_transactions == NULL) {
 		journal->j_checkpoint_transactions = commit_transaction;
 		commit_transaction->t_cpnext = commit_transaction;
@@ -1103,6 +1156,7 @@ restart_loop:
 	spin_lock(&journal->j_list_lock);
 	commit_transaction->t_state = T_FINISHED;
 	/* Check if the transaction can be dropped now that we are finished */
+	/* 本事务的checkpoint已经为空,则本事务可直接删除*/
 	if (commit_transaction->t_checkpoint_list == NULL &&
 	    commit_transaction->t_checkpoint_io_list == NULL) {
 		__jbd2_journal_drop_transaction(journal, commit_transaction);

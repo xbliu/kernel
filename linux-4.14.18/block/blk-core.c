@@ -1873,6 +1873,7 @@ static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 	 */
 	blk_queue_bounce(q, &bio);
 
+	/*根据块设备请求队列的limits.max_sectors和limits.max_segmetns来拆分bio,适应设备缓存,会在函数blk_set_default_limits中设置*/
 	blk_queue_split(q, &bio);
 
 	if (!bio_integrity_prep(bio))

@@ -81,6 +81,7 @@ static inline bool bvec_iter_advance(const struct bio_vec *bv,
 	}
 
 	while (bytes) {
+		/*当前bio_vec的剩余请求大小*/
 		unsigned iter_len = bvec_iter_len(bv, *iter);
 		unsigned len = min(bytes, iter_len);
 
@@ -89,6 +90,7 @@ static inline bool bvec_iter_advance(const struct bio_vec *bv,
 		iter->bi_bvec_done += len;
 		iter->bi_done += len;
 
+		/*当前bio_vec请求完成,更新下一个bio_vec*/
 		if (iter->bi_bvec_done == __bvec_iter_bvec(bv, *iter)->bv_len) {
 			iter->bi_bvec_done = 0;
 			iter->bi_idx++;

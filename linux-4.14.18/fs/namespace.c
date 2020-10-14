@@ -2104,6 +2104,7 @@ retry:
 	namespace_unlock();
 	inode_unlock(path->dentry->d_inode);
 	path_put(path);
+	/*说明有用户正在mount到此目录*/
 	path->mnt = mnt;
 	dentry = path->dentry = dget(mnt->mnt_root);
 	goto retry;

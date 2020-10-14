@@ -1083,6 +1083,7 @@ int jbd2_journal_get_write_access(handle_t *handle, struct buffer_head *bh)
 	struct journal_head *jh;
 	int rc;
 
+	/*检查是否已加入*/
 	if (jbd2_write_access_granted(handle, bh, false))
 		return 0;
 

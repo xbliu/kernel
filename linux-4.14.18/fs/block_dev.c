@@ -898,7 +898,7 @@ struct block_device *bdget(dev_t dev)
 		inode->i_data.a_ops = &def_blk_aops;
 		mapping_set_gfp_mask(&inode->i_data, GFP_USER);
 		spin_lock(&bdev_lock);
-		list_add(&bdev->bd_list, &all_bdevs);
+		list_add(&bdev->bd_list, &all_bdevs); //用于统计buffer
 		spin_unlock(&bdev_lock);
 		unlock_new_inode(inode);
 	}

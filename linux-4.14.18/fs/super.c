@@ -480,6 +480,9 @@ struct super_block *sget_userns(struct file_system_type *type,
 retry:
 	spin_lock(&sb_lock);
 	if (test) {
+		/*
+		用于测试是否是同一块设备挂载到不同目录,同一块设备挂载到不同目录共用super block
+		*/
 		hlist_for_each_entry(old, &type->fs_supers, s_instances) {
 			if (!test(old, data))
 				continue;

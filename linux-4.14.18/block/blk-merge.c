@@ -110,14 +110,22 @@ static struct bio *blk_bio_segment_split(struct request_queue *q,
 	struct bio *new = NULL;
 	const unsigned max_sectors = get_max_io_size(q, bio);
 
+	/*
+	循环遍历bio下每个bio_vec, 累加segment(nsegs), 以及累计总扇区大小sectors
+	满足以下任意条件则拆分:
+	1)nsegs == max_segs  累计segment超过支持最大的的段 max_segments
+    2)sectors + (bv.bv_len >> 9) > max_sectors , 累计扇区数 > block 可下发的最大扇区数(max_sectors_kb)
+    3)相邻bio_vec存在间隙且queue不支持SG 间隙
+	*/
 	bio_for_each_segment(bv, bio, iter) {
 		/*
 		 * If the queue doesn't support SG gaps and adding this
 		 * offset would create a gap, disallow it.
 		 */
+		 /*相邻bio_vec存在间隙且queue不支持SG 间隙则拆分*/
 		if (bvprvp && bvec_gap_to_prev(q, bvprvp, bv.bv_offset))
 			goto split;
-
+		/*扇区数超过最大限制,拆分*/
 		if (sectors + (bv.bv_len >> 9) > max_sectors) {
 			/*
 			 * Consider this a new segment if we're splitting in
@@ -133,14 +141,28 @@ static struct bio *blk_bio_segment_split(struct request_queue *q,
 			/* Make this single bvec as the 1st segment */
 		}
 
+		/*
+		bio_sev合并前提:
+			1)合并后的seg_size小于等于max_segment_size
+			2)相邻bio_vec在物理内存上相邻
+			3)相邻bio_vec地址未跨过边界
+		*/
 		if (bvprvp && blk_queue_cluster(q)) {
+			/*合并后的seg大小超过max_segment_size*/
 			if (seg_size + bv.bv_len > queue_max_segment_size(q))
 				goto new_segment;
+			/*相邻bio_vec是否可以合并(相邻bio_vec是否在物理内存上相邻)*/
 			if (!BIOVEC_PHYS_MERGEABLE(bvprvp, &bv))
 				goto new_segment;
+			/*BIOVEC_SEG_BOUNDARY用于检测是否超过边界,
+			段的大小和边界掩码是用来代表设备的硬件散布收集能力的--
+			很多东西对单个描述符所指向的数据的大小和对齐方式都是有限制的
+			(例如xHCI TRB，数据缓冲区不得跨越64KB边界)
+			*/
 			if (!BIOVEC_SEG_BOUNDARY(q, bvprvp, &bv))
 				goto new_segment;
 
+			/*相邻的bio_vec合并成一个segment*/
 			seg_size += bv.bv_len;
 			bvprv = bv;
 			bvprvp = &bvprv;
@@ -154,12 +176,13 @@ new_segment:
 		if (nsegs == queue_max_segments(q))
 			goto split;
 
-		nsegs++;
+		nsegs++; //每一个bio_vec代表一个请求段
 		bvprv = bv;
 		bvprvp = &bvprv;
 		seg_size = bv.bv_len;
-		sectors += bv.bv_len >> 9;
+		sectors += bv.bv_len >> 9; //统计所有的bio_vec拥有的扇区数
 
+		/*更正第一个segment的size*/
 		if (nsegs == 1 && seg_size > front_seg_size)
 			front_seg_size = seg_size;
 	}

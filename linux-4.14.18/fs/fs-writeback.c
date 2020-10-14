@@ -1105,9 +1105,9 @@ static int move_expired_inodes(struct list_head *delaying_queue,
 	int moved = 0;
 
 	/*
-	a1.计算older_than_this(dirty还是dirty_time)
-	非同步任务的dirty_time更新以dirtytime_expire_interval单位<EXPIRE_DIRTY_ATIME>
-	同步任务不处理dirty_time
+	a1.计算older_than_this(作为应处理的截止时间即此时间之前的dirty inode应回写)
+	!sync work的deadline time=当前时间-dirtytime_expire_interval<EXPIRE_DIRTY_ATIME>
+	sync work的deadline time以wb_writeback 进入时为准
 	*/
 	if ((flags & EXPIRE_DIRTY_ATIME) == 0)
 		older_than_this = work->older_than_this;
@@ -1418,7 +1418,7 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	 * sees clear I_DIRTY_PAGES or we see PAGECACHE_TAG_DIRTY.
 	 */
 	smp_mb();
-	//I_DIRTY_PAGES 会随状态清除一起清除,而inode回写数据并非所有diryt页写入,故需还原
+	//I_DIRTY_PAGES 会随状态清除一起清除,而inode回写数据并非所有dirty页写入,故需还原
 	if (mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
 		inode->i_state |= I_DIRTY_PAGES;
 
@@ -1705,7 +1705,8 @@ static long writeback_sb_inodes(struct super_block *sb,
 		 * bail out to wb_writeback() often enough to check
 		 * background threshold and other termination conditions.
 		 */
-		/*单个work的任务处理时间超过HZ /10UL(0.1s)或已完成写入页数则退出本任务*/
+		/*单个work的任务处理时间超过HZ /10UL(0.1s) <为了能够及时检测到后台任务阀值与其它终止条件>
+		或已完成写入页数则退出本任务*/
 		if (wrote) {
 			if (time_is_before_jiffies(start_time + HZ / 10UL))
 				break;
@@ -1801,6 +1802,7 @@ static long writeback_inodes_wb(struct bdi_writeback *wb, long nr_pages,
      1)回写脏页数目达到work的预期nr_pages 
      2)没有脏页可回写 
      3)对于background回写,脏页数目小于阀值
+     4)周期/后台回写过程中有新任务到来
 2.回写work的优先级: 
     1)普通work(用户主动同步,内存不足,线程不足等)
     2)kupdate work

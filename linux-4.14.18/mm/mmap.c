@@ -496,6 +496,14 @@ static int find_vma_links(struct mm_struct *mm, unsigned long addr,
 	__rb_link = &mm->mm_rb.rb_node;
 	rb_prev = __rb_parent = NULL;
 
+	/*
+	遍历所有的vma,查找是否与现有vma存在交叉
+	(
+	mm_rb以vm_end为key的红黑树,
+	左子树的vm_end小于父结点的vm_end
+	右子树的vm_end大于父结点的vm_end
+	)
+	*/
 	while (*__rb_link) {
 		struct vm_area_struct *vma_tmp;
 

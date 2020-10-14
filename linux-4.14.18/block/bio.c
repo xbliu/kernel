@@ -1960,15 +1960,17 @@ struct bio *bio_split(struct bio *bio, int sectors,
 	BUG_ON(sectors <= 0);
 	BUG_ON(sectors >= bio_sectors(bio));
 
+	/*clone一份bio(disk,partno,iter,bi_io_vec)*/
 	split = bio_clone_fast(bio, gfp, bs);
 	if (!split)
 		return NULL;
-
+	/*更改分离后的大小*/
 	split->bi_iter.bi_size = sectors << 9;
 
 	if (bio_integrity(split))
 		bio_integrity_trim(split);
 
+	/*更新之前的bio (bi_sector,size)*/
 	bio_advance(bio, split->bi_iter.bi_size);
 
 	if (bio_flagged(bio, BIO_TRACE_COMPLETION))
@@ -2100,7 +2102,15 @@ struct bio_set *bioset_create(unsigned int pool_size,
 	if (!(flags & BIOSET_NEED_RESCUER))
 		return bs;
 
-    /*a3.初始化rescue_workqueue 作用???*/
+    /*
+    a3.初始化rescue_workqueue 
+    bio从mempool分配可能会需要等待以前的用户返回他们使用的mempool内存,
+    而这个等待的依赖关系又会是某些之前的bio,
+    所以可能会再次导致generic_make_request()死锁.
+    为每个用于bio分配的mempool分配一个“rescuer”线程,如果bio分配不成功,
+    那么所有当前进程的current->bio_list中的来自同一个bioset的所有bios将会被交给bioset线程进行处理,
+    从而避免死锁.
+	*/
 	bs->rescue_workqueue = alloc_workqueue("bioset", WQ_MEM_RECLAIM, 0);
 	if (!bs->rescue_workqueue)
 		goto bad;

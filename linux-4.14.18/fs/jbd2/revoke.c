@@ -321,7 +321,9 @@ void jbd2_journal_destroy_revoke(journal_t *journal)
  * If bh_in is non-zero, jbd2_journal_revoke() will decrement its b_count
  * by one.
  */
-
+/*
+为间接块分配块失败/间接块的删除
+*/
 int jbd2_journal_revoke(handle_t *handle, unsigned long long blocknr,
 		   struct buffer_head *bh_in)
 {
