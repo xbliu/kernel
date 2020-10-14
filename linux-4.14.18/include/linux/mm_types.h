@@ -287,14 +287,15 @@ struct vm_userfaultfd_ctx {};
  */
 struct vm_area_struct {
 	/* The first cache line has the info for VMA tree walking. */
-
+    /*vam的起始址址*/
 	unsigned long vm_start;		/* Our start address within vm_mm. */
 	unsigned long vm_end;		/* The first byte after our end address
 					   within vm_mm. */
 
 	/* linked list of VM areas per task, sorted by address */
+    /*vam列表,按地址排序 用于计算gap与合并*/
 	struct vm_area_struct *vm_next, *vm_prev;
-
+    /*红黑树结点:查找vma*/
 	struct rb_node vm_rb;
 
 	/*
@@ -303,6 +304,10 @@ struct vm_area_struct {
 	 * VMAs below us in the VMA rbtree and its ->vm_prev. This helps
 	 * get_unmapped_area find a free area of the right size.
 	 */
+    /*
+    gap:vma左侧的最大可用内存空间(以字节为单位)
+    vma及其左右子树的gap三者中的最大值
+    */
 	unsigned long rb_subtree_gap;
 
 	/* Second cache line starts here. */
@@ -334,6 +339,7 @@ struct vm_area_struct {
 	const struct vm_operations_struct *vm_ops;
 
 	/* Information about our backing store: */
+    /*vma开始地址偏移(以PAGE为单位)*/
 	unsigned long vm_pgoff;		/* Offset (within vm_file) in PAGE_SIZE
 					   units */
 	struct file * vm_file;		/* File we map to (can be NULL). */
@@ -362,7 +368,12 @@ struct core_state {
 
 struct kioctx_table;
 struct mm_struct {
+    /*以vm_end大小从小到大排序的列表*/
 	struct vm_area_struct *mmap;		/* list of VMAs */
+    /*
+    以vm_end为key的红黑树:快速的查找vma
+    左孩子结点vm_end < 父结点vm_end < 右孩子vm_end
+    */
 	struct rb_root mm_rb;
 	u32 vmacache_seqnum;                   /* per-thread vmacache */
 #ifdef CONFIG_MMU
@@ -378,6 +389,7 @@ struct mm_struct {
 	unsigned long mmap_compat_legacy_base;
 #endif
 	unsigned long task_size;		/* size of task vm space */
+    /*树中最右侧结点(vma中地址最大的vma的结束地址)*/
 	unsigned long highest_vm_end;		/* highest vma end address */
 	pgd_t * pgd;
 

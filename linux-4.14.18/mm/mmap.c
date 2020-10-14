@@ -2046,10 +2046,12 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 	if (len > TASK_SIZE - mmap_min_addr)
 		return -ENOMEM;
 
+    /*固定地址映射,直接返回给定地址(不论区间内是否已存在映射)*/
 	if (flags & MAP_FIXED)
 		return addr;
 
 	/* requesting a specific address */
+    /*1)根椐指定地址分配可用空间*/
 	if (addr) {
 		addr = PAGE_ALIGN(addr);
 		vma = find_vma_prev(mm, addr, &prev);
@@ -2059,6 +2061,7 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 			return addr;
 	}
 
+    /*2)分配任意地址的可用空间 (指定地址失败或者未指定地址)*/
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
 	info.low_limit = max(PAGE_SIZE, mmap_min_addr);
@@ -2142,18 +2145,29 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 EXPORT_SYMBOL(get_unmapped_area);
 
 /* Look up the first VMA which satisfies  addr < vm_end,  NULL if none. */
+/* 
+根椐指定addr查找vma,满足以下任一条件:
+1)vma->start <= addr < vma->vm_end 
+2)最后一个vma->end > addr && vma->start > addr即距离addr最近的右侧vma
+*/
 struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 {
 	struct rb_node *rb_node;
 	struct vm_area_struct *vma;
 
 	/* Check the cache first. */
+    /*
+    1)从当前进程的vmacache中查找 符合以下条件的vma: 
+      vma->start <= addr < vma->vm_end 
+    */
 	vma = vmacache_find(mm, addr);
 	if (likely(vma))
 		return vma;
 
 	rb_node = mm->mm_rb.rb_node;
-
+    /*
+    2)从红黑树中查找包含addr的vma或者距离addr最近的右侧vma
+    */
 	while (rb_node) {
 		struct vm_area_struct *tmp;
 
@@ -2168,6 +2182,7 @@ struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 			rb_node = rb_node->rb_right;
 	}
 
+    /*3)查找成功后更新vmacache*/
 	if (vma)
 		vmacache_update(addr, vma);
 	return vma;
@@ -2190,6 +2205,7 @@ find_vma_prev(struct mm_struct *mm, unsigned long addr,
 	} else {
 		struct rb_node *rb_node = mm->mm_rb.rb_node;
 		*pprev = NULL;
+        /*距离addr最近的最右侧的vma没有找到,说明addr大于所有vma,故取最右侧结点*/
 		while (rb_node) {
 			*pprev = rb_entry(rb_node, struct vm_area_struct, vm_rb);
 			rb_node = rb_node->rb_right;

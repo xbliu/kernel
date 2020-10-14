@@ -238,7 +238,14 @@ void __vma_link_list(struct mm_struct *mm, struct vm_area_struct *vma,
 		struct vm_area_struct *prev, struct rb_node *rb_parent)
 {
 	struct vm_area_struct *next;
-
+    /*
+    红黑树中查找前继结点分三种情况: 
+    1)有前继结点 
+         prev<-->next => prev<-->vma<-->next
+    2)未有前继结点:说明在树中最左侧
+         a)非根结点  vma <--> next(parent)
+         b)根结点    vma
+    */
 	vma->vm_prev = prev;
 	if (prev) {
 		next = prev->vm_next;
