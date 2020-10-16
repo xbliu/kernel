@@ -1818,12 +1818,19 @@ unsigned long unmapped_area(struct vm_unmapped_area_info *info)
 	low_limit = info->low_limit + length;
 
 	/* Check if rbtree root looks promising */
+    /*
+    a.空树:说明未有任何空间分配 从最低端分配 
+    b.现有vma的空隙无足够的空间,说明要从[highest_vm_end,ULONG_MAX]分配(此范围未纳入树中)
+    */
 	if (RB_EMPTY_ROOT(&mm->mm_rb))
 		goto check_highest;
 	vma = rb_entry(mm->mm_rb.rb_node, struct vm_area_struct, vm_rb);
 	if (vma->rb_subtree_gap < length)
 		goto check_highest;
 
+    /*
+    整个树的遍历方式为中序遍历(左根右)
+    */
 	while (true) {
 		/* Visit left subtree if it looks promising */
 		gap_end = vm_start_gap(vma);
@@ -1907,6 +1914,7 @@ unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 	 * Adjust search limits by the desired length.
 	 * See implementation comment at top of unmapped_area().
 	 */
+    /*1)从最高端处往下分配内存*/
 	gap_end = info->high_limit;
 	if (gap_end < length)
 		return -ENOMEM;
@@ -1924,12 +1932,22 @@ unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 	/* Check if rbtree root looks promising */
 	if (RB_EMPTY_ROOT(&mm->mm_rb))
 		return -ENOMEM;
+    /*2)从现有vma构成的间隙分配内存*/
 	vma = rb_entry(mm->mm_rb.rb_node, struct vm_area_struct, vm_rb);
 	if (vma->rb_subtree_gap < length)
 		return -ENOMEM;
 
+    /*
+    a.遍历整个vma树,顺序为右根左
+    b.间隙为 [prev vma->vm_end,vma->vm_start]
+    */
 	while (true) {
 		/* Visit right subtree if it looks promising */
+        /*
+        先遍历右子树:
+        topdown说明从高地址往下分配内存,右子树>根>左子树 key 
+        即从高地址往下查找是否有合适的空间分配 
+        */
 		gap_start = vma->vm_prev ? vm_end_gap(vma->vm_prev) : 0;
 		if (gap_start <= high_limit && vma->vm_rb.rb_right) {
 			struct vm_area_struct *right =
@@ -1943,6 +1961,7 @@ unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 
 check_current:
 		/* Check if current node has a suitable gap */
+        /*当前结点处理*/
 		gap_end = vm_start_gap(vma);
 		if (gap_end < low_limit)
 			return -ENOMEM;
@@ -1951,6 +1970,7 @@ check_current:
 			goto found;
 
 		/* Visit left subtree if it looks promising */
+        /*查找左子树*/
 		if (vma->vm_rb.rb_left) {
 			struct vm_area_struct *left =
 				rb_entry(vma->vm_rb.rb_left,
@@ -1962,12 +1982,14 @@ check_current:
 		}
 
 		/* Go back up the rbtree to find next candidate node */
+        /*回退到下一个要查找的根节点*/
 		while (true) {
 			struct rb_node *prev = &vma->vm_rb;
 			if (!rb_parent(prev))
 				return -ENOMEM;
 			vma = rb_entry(rb_parent(prev),
 				       struct vm_area_struct, vm_rb);
+            /*只有当前结点是父结点的右孩子才终止回退*/
 			if (prev == vma->vm_rb.rb_right) {
 				gap_start = vma->vm_prev ?
 					vm_end_gap(vma->vm_prev) : 0;
