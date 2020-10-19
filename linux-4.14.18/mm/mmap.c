@@ -686,6 +686,12 @@ static inline void __vma_unlink_prev(struct mm_struct *mm,
  * are necessary.  The "insert" vma (if any) is to be inserted
  * before we drop the necessary locks.
  */
+/* 
+vma:要调整的vma 
+start:合并的开始地址
+end:合并的结束地址
+expand:扩展vma(合并到哪个vma)
+*/
 int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	unsigned long end, pgoff_t pgoff, struct vm_area_struct *insert,
 	struct vm_area_struct *expand)
@@ -1104,6 +1110,25 @@ can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
  * parameter) may establish ptes with the wrong permissions of NNNN
  * instead of the right permissions of XXXX.
  */
+/*
+产生合并(vma_merge)的情况有以下两种:
+1)因新的vma分配导致合并操作 (mmap, brk or mremap 此时vma未映射) 
+     a.可与前后两个vma合并 (1) 向前向后
+     b.只能与前一个vma合并 (2) 向前
+     c.只能与后一个vma合并 (3) 向后
+2)因vma属性改变导致现有的vma进行合并操作 
+( 
+mprotect 此时vma已映射,vma在地址上连续但因属性不同故分成多个vma 
+mprotect_fixup传进来的区域只属于一个vma <do_mprotect_pkey-->mprotect_fixup>
+) 
+    合并涉及两个vma
+     a.修改前一个vma的一部分与后一个vma合并 (4)    向后
+     b.修改后一个vma的一部分与前一个vma合并 (5)    向前
+    合并涉及三个vma
+     a.修改中间vma使三个vma合并 (6)              向前向后
+     b.修改中间vma 与前一个vma完全合并 (7)        向前
+     c.修改中间vma 与后一个vma完全合并  (8)       向后 
+*/
 struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			struct vm_area_struct *prev, unsigned long addr,
 			unsigned long end, unsigned long vm_flags,
@@ -1127,6 +1152,7 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 	else
 		next = mm->mmap;
 	area = next;
+    /*vma地址上连续 mprotect案例*/
 	if (area && area->vm_end == end)		/* cases 6, 7, 8 */
 		next = next->vm_next;
 
@@ -1138,6 +1164,15 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 	/*
 	 * Can it merge with the predecessor?
 	 */
+    /*
+    根椐向前与向后合并划分以上8种情况:
+    1)向前合并 case 1,2,5,6,7 
+        前后合并     case 1,6
+        前后不能合并  case 2,5,7
+    2)向后合并 case 3,4,8 
+        addr小于前一个vma的vm_end(修改前一个vma的后面一部分) case 4
+        end=vma->vm_start  case 3,8
+    */
 	if (prev && prev->vm_end == addr &&
 			mpol_equal(vma_policy(prev), policy) &&
 			can_vma_merge_after(prev, vm_flags,
