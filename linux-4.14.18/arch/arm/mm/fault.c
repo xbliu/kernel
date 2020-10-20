@@ -294,7 +294,7 @@ do_page_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 		if (!user_mode(regs) && !search_exception_tables(regs->ARM_pc))
 			goto no_context;
 retry:
-		down_read(&mm->mmap_sem);
+		down_read(&mm->mmap_sem); //用户空间睡眠等待锁持有者释放锁
 	} else {
 		/*
 		 * The above down_read_trylock() might have succeeded in
@@ -309,6 +309,7 @@ retry:
 #endif
 	}
 
+	/*缺页处理*/
 	fault = __do_page_fault(mm, addr, fsr, flags, tsk);
 
 	/* If we need to retry but a fatal signal is pending, handle the
@@ -352,6 +353,7 @@ retry:
 	/*
 	 * Handle the "normal" case first - VM_FAULT_MAJOR
 	 */
+	/*缺页中断处理完成(正常路径)*/ 
 	if (likely(!(fault & (VM_FAULT_ERROR | VM_FAULT_BADMAP | VM_FAULT_BADACCESS))))
 		return 0;
 
@@ -389,10 +391,12 @@ retry:
 			SEGV_ACCERR : SEGV_MAPERR;
 	}
 
+	/*用户空间发生异常,给用户进程发信号：SIGBUS/SIGSEGV*/
 	__do_user_fault(tsk, addr, fsr, sig, code, regs);
 	return 0;
 
 no_context:
+	/*内核空间发生异常,若无法修复异常,产生oops*/
 	__do_kernel_fault(mm, addr, fsr, regs);
 	return 0;
 }

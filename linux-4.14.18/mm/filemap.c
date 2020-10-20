@@ -2447,12 +2447,14 @@ int filemap_fault(struct vm_fault *vmf)
 	/*
 	 * Do we have something in the page cache already?
 	 */
+	/*从file->f_mapping中查找是否已经缓存,未缓存则读取*/ 
 	page = find_get_page(mapping, offset);
 	if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
 		/*
 		 * We found the page, so try async readahead before
 		 * waiting for the lock.
 		 */
+		/*page有PG_readahead则预读 */ 
 		do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
 	} else if (!page) {
 		/* No page in the page cache at all */
@@ -2497,6 +2499,7 @@ retry_find:
 		return VM_FAULT_SIGBUS;
 	}
 
+	//关联上页
 	vmf->page = page;
 	return ret | VM_FAULT_LOCKED;
 

@@ -358,12 +358,17 @@ static int __do_page_fault(struct mm_struct *mm, unsigned long addr,
 {
 	struct vm_area_struct *vma;
 	int fault;
-
+	
+	/*
+	查找addr是否映射:
+	1) vm_start < addr < vm_end    => good area
+	2)vm_start > addr 		=> may be stack
+	*/
 	vma = find_vma(mm, addr);
 	fault = VM_FAULT_BADMAP;
 	if (unlikely(!vma))
 		goto out;
-	if (unlikely(vma->vm_start > addr))
+	if (unlikely(vma->vm_start > addr)) //检查是否是栈空间
 		goto check_stack;
 
 	/*
@@ -380,6 +385,11 @@ good_area:
 		goto out;
 	}
 
+	/*
+	处理用户空间的缺页异常:
+	1)用户模式下访问用户空间,触发缺页异常
+	2)内核模式下访问用户空间,触发缺页异常
+	*/
 	return handle_mm_fault(vma, addr & PAGE_MASK, mm_flags);
 
 check_stack:

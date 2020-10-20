@@ -3885,6 +3885,7 @@ static int handle_pte_fault(struct vm_fault *vmf)
 		 * mmap_sem read mode and khugepaged takes it in write mode.
 		 * So now it's safe to run pte_offset_map().
 		 */
+		/*根椐addr从pmd中获取pte指针*/ 
 		vmf->pte = pte_offset_map(vmf->pmd, vmf->address);
 		vmf->orig_pte = *vmf->pte;
 
@@ -3903,16 +3904,19 @@ static int handle_pte_fault(struct vm_fault *vmf)
 		}
 	}
 
+	/*页表项无效*/
 	if (!vmf->pte) {
-		if (vma_is_anonymous(vmf->vma))
+		if (vma_is_anonymous(vmf->vma)) //匿名映射处理
 			return do_anonymous_page(vmf);
 		else
-			return do_fault(vmf);
+			return do_fault(vmf); //共享映射与文件映射处理
 	}
 
+	/*页表项存在但不在内存中,交换页*/
 	if (!pte_present(vmf->orig_pte))
 		return do_swap_page(vmf);
 
+	/*NUMA 自动平衡处理*/
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
 		return do_numa_page(vmf);
 
@@ -3921,6 +3925,7 @@ static int handle_pte_fault(struct vm_fault *vmf)
 	entry = vmf->orig_pte;
 	if (unlikely(!pte_same(*vmf->pte, entry)))
 		goto unlock;
+	/*页在内存中无写权限,写时复制*/
 	if (vmf->flags & FAULT_FLAG_WRITE) {
 		if (!pte_write(entry))
 			return do_wp_page(vmf);
@@ -3967,11 +3972,14 @@ static int __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 	p4d_t *p4d;
 	int ret;
 
+	/*当前进程PGD目录项(页全局目录项)*/
 	pgd = pgd_offset(mm, address);
+	/*p4d目录项(页四级目录项):无则创建*/
 	p4d = p4d_alloc(mm, pgd, address);
 	if (!p4d)
 		return VM_FAULT_OOM;
 
+	/*页上级目录项:无则创建*/
 	vmf.pud = pud_alloc(mm, p4d, address);
 	if (!vmf.pud)
 		return VM_FAULT_OOM;
@@ -3998,6 +4006,7 @@ static int __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		}
 	}
 
+	/*页中级目录项:无则创建*/
 	vmf.pmd = pmd_alloc(mm, vmf.pud, address);
 	if (!vmf.pmd)
 		return VM_FAULT_OOM;
@@ -4031,6 +4040,7 @@ static int __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		}
 	}
 
+	/*处理pte页表 (page table entry)*/
 	return handle_pte_fault(&vmf);
 }
 
@@ -4065,6 +4075,7 @@ int handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 	if (flags & FAULT_FLAG_USER)
 		mem_cgroup_oom_enable();
 
+	/*大页缺页处理与正常缺页处理*/
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
 	else

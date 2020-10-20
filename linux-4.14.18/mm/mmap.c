@@ -224,6 +224,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		goto set_brk;
 
 	/* Always allow shrinking brk. */
+	/*新堆小于当前堆值,收缩堆*/
 	if (brk <= mm->brk) {
 		if (!do_munmap(mm, newbrk, oldbrk-newbrk, &uf))
 			goto set_brk;
@@ -232,7 +233,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 
 	/* Check against existing mmap mappings. */
 	next = find_vma(mm, oldbrk);
-	if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
+	if (next && newbrk + PAGE_SIZE > vm_start_gap(next)) /*距离oldbrk最近的右侧vma vm_start与oldbrk之间的空间不足*/
 		goto out;
 
 	/* Ok, looks good - let it rip. */
@@ -487,6 +488,10 @@ anon_vma_interval_tree_post_update_vma(struct vm_area_struct *vma)
 		anon_vma_interval_tree_insert(avc, &avc->anon_vma->rb_root);
 }
 
+/*
+1.检测是否与现有vma存在交叉
+2.返回[addr,end]的前继结点,插入位置与父结点
+*/
 static int find_vma_links(struct mm_struct *mm, unsigned long addr,
 		unsigned long end, struct vm_area_struct **pprev,
 		struct rb_node ***rb_link, struct rb_node **rb_parent)
@@ -691,6 +696,13 @@ vma:要调整的vma
 start:合并的开始地址
 end:合并的结束地址
 expand:扩展vma(合并到哪个vma)
+
+adjust需要做以下几件事:
+1)扩展当前vma (更改vma的起始地址)
+2)若mm中两个vma合并则需要移除其中一个vma
+	a.从mm->mm_rb红黑树中移除
+	b.从mm->mmap列表中移除
+3)vma发生变化,相应结点的subtree_gap则需要重新计算
 */
 int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	unsigned long end, pgoff_t pgoff, struct vm_area_struct *insert,
@@ -706,6 +718,14 @@ int __vma_adjust(struct vm_area_struct *vma, unsigned long start,
 	long adjust_next = 0;
 	int remove_next = 0;
 
+	/*
+	计算next vma需移除或调整的情况
+	1)next vma需移除的有:6,1,7,8
+		remove_next == 3 is case 8 需移除vma
+		remove_next == 2 is case 6 需移除两次
+		remove_next == 1 is case 1,7 移除一次
+	2)next vam需调整的有:5,4
+	*/
 	if (next && !insert) {
 		struct vm_area_struct *exporter = NULL, *importer = NULL;
 
@@ -832,6 +852,7 @@ again:
 			vma_interval_tree_remove(next, root);
 	}
 
+	/*扩展vma边界*/
 	if (start != vma->vm_start) {
 		vma->vm_start = start;
 		start_changed = true;
@@ -841,6 +862,11 @@ again:
 		end_changed = true;
 	}
 	vma->vm_pgoff = pgoff;
+	/*
+	调整 next vma区间
+	4:扩充next vma
+	5:切分next vma
+	*/
 	if (adjust_next) {
 		next->vm_start += adjust_next << PAGE_SHIFT;
 		next->vm_pgoff += adjust_next;
@@ -858,6 +884,7 @@ again:
 		 * vma_merge has merged next into vma, and needs
 		 * us to remove next before dropping the locks.
 		 */
+		/*6,1,7,8从mm->mmap与mm->mm_rb中移除next vma,将vma与next的next联接*/ 
 		if (remove_next != 3)
 			__vma_unlink_prev(mm, next, vma);
 		else
@@ -881,13 +908,14 @@ again:
 		 */
 		__insert_vm_struct(mm, insert);
 	} else {
+		/*4,5,2,3更新vma gap*/
 		if (start_changed)
-			vma_gap_update(vma);
+			vma_gap_update(vma); //case 3
 		if (end_changed) {
 			if (!next)
 				mm->highest_vm_end = vm_end_gap(vma);
 			else if (!adjust_next)
-				vma_gap_update(next);
+				vma_gap_update(next); //case 2
 		}
 	}
 
@@ -916,12 +944,14 @@ again:
 			anon_vma_merge(vma, next);
 		mm->map_count--;
 		mpol_put(vma_policy(next));
+		/*释放next vma*/
 		kmem_cache_free(vm_area_cachep, next);
 		/*
 		 * In mprotect's case 6 (see comments on vma_merge),
 		 * we must remove another next too. It would clutter
 		 * up the code too much to do both in one go.
 		 */
+		/*更新next的gap*/
 		if (remove_next != 3) {
 			/*
 			 * If "next" was removed and vma->vm_end was
@@ -1695,10 +1725,10 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		vm_flags |= VM_ACCOUNT;
 	}
 
-	/*a3.与旧的mapping尝试合并 ???这样有什么好处*/
 	/*
 	 * Can we just expand an old mapping?
 	 */
+	 /*a3.与临近的vma进行合并:减少vma的数量*/
 	vma = vma_merge(mm, prev, addr, addr + len, vm_flags,
 			NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX);
 	if (vma)
@@ -1743,7 +1773,12 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		 * new file must not have been exposed to user-space, yet.
 		 */
 		vma->vm_file = get_file(file);
-		/*b1.调用具体文件系统的mapping*/
+		/*
+		b1.调用具体文件系统的mapping
+		(主要是为vma->vm_ops赋值,赋值情况之一为:
+		vma->vm_ops = &generic_file_vm_ops
+		)
+		*/
 		error = call_mmap(file, vma);
 		if (error)
 			goto unmap_and_free_vma;
@@ -1760,7 +1795,10 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		addr = vma->vm_start;
 		vm_flags = vma->vm_flags;
 	} else if (vm_flags & VM_SHARED) {
-		/*b1.设置匿名映射(dev/zero)*/
+		/*
+		b1.设置匿名映射(dev/zero)
+		vma->vm_ops = &shmem_vm_ops
+		*/
 		error = shmem_zero_setup(vma);
 		if (error)
 			goto free_vma;
@@ -1960,6 +1998,11 @@ unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 	low_limit = info->low_limit + length;
 
 	/* Check highest gap, which does not precede any rbtree node */
+	/*
+	mm->highest_vm_end: vma中最大的vm_end
+	unmapped_area_topdown 从高地址往低址址分配
+	gap_start < high_limit说明高地址有足够的空间进行分配
+	*/
 	gap_start = mm->highest_vm_end;
 	if (gap_start <= high_limit)
 		goto found_highest;
@@ -2176,7 +2219,7 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
         arch_pick_mmap_layout
         --->
             mm->get_unmapped_area = arch_get_unmapped_area_topdown/arch_get_unmapped_area;
-	2)文件映射则f_op->get_unmapped_area,
+	2)文件映射则f_op->get_unmapped_area
     3)共享映射则shmem_get_unmapped_area
 	*/
 	get_area = current->mm->get_unmapped_area;
@@ -3002,6 +3045,7 @@ static int do_brk_flags(unsigned long addr, unsigned long request, unsigned long
 	/*
 	 * Clear old maps.  this also does some error checking for us
 	 */
+	/*什么时候会出现此种情况???*/ 
 	while (find_vma_links(mm, addr, addr + len, &prev, &rb_link,
 			      &rb_parent)) {
 		if (do_munmap(mm, addr, len, uf))
@@ -3019,6 +3063,7 @@ static int do_brk_flags(unsigned long addr, unsigned long request, unsigned long
 		return -ENOMEM;
 
 	/* Can we just expand an old private anonymous mapping? */
+	/*是否可以扩展现有的vma来满足分配需求*/
 	vma = vma_merge(mm, prev, addr, addr + len, flags,
 			NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
 	if (vma)
