@@ -2463,6 +2463,7 @@ static int wp_page_copy(struct vm_fault *vmf)
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 
+    /*a1.创建新页*/
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
 		new_page = alloc_zeroed_user_highpage_movable(vma,
 							      vmf->address);
@@ -2473,7 +2474,7 @@ static int wp_page_copy(struct vm_fault *vmf)
 				vmf->address);
 		if (!new_page)
 			goto oom;
-		cow_user_page(new_page, old_page, vmf->address, vma);
+		cow_user_page(new_page, old_page, vmf->address, vma); //拷贝旧页到新页
 	}
 
 	if (mem_cgroup_try_charge(new_page, mm, GFP_KERNEL, &memcg, false))
@@ -2497,6 +2498,7 @@ static int wp_page_copy(struct vm_fault *vmf)
 		} else {
 			inc_mm_counter_fast(mm, MM_ANONPAGES);
 		}
+        /*b1.设置pte 新值 (flush cache,update mmu cache)*/
 		flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
@@ -2550,6 +2552,7 @@ static int wp_page_copy(struct vm_fault *vmf)
 		mem_cgroup_cancel_charge(new_page, memcg, false);
 	}
 
+    /*a2.释放页 (设置pte成功则释放的是旧页,不成功则是新创建的页)*/
 	if (new_page)
 		put_page(new_page);
 
@@ -3078,6 +3081,7 @@ static int do_anonymous_page(struct vm_fault *vmf)
 		return 0;
 
 	/* Use the zero-page for reads */
+    /*a1.首次读使用zero page*/
 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
 			!mm_forbids_zeropage(vma->vm_mm)) {
 		entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
@@ -3100,6 +3104,10 @@ static int do_anonymous_page(struct vm_fault *vmf)
 	/* Allocate our own private page. */
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
+    /*
+    a1.首次写 
+    分配物理页
+    */
 	page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
 	if (!page)
 		goto oom;
@@ -3114,9 +3122,10 @@ static int do_anonymous_page(struct vm_fault *vmf)
 	 */
 	__SetPageUptodate(page);
 
+    /*a2.创建页表项*/
 	entry = mk_pte(page, vma->vm_page_prot);
 	if (vma->vm_flags & VM_WRITE)
-		entry = pte_mkwrite(pte_mkdirty(entry));
+		entry = pte_mkwrite(pte_mkdirty(entry)); //设置页表项值为脏且可写
 
 	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
 			&vmf->ptl);
@@ -3138,11 +3147,13 @@ static int do_anonymous_page(struct vm_fault *vmf)
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
 	page_add_new_anon_rmap(page, vma, vmf->address, false);
 	mem_cgroup_commit_charge(page, memcg, false, false);
-	lru_cache_add_active_or_unevictable(page, vma);
+	lru_cache_add_active_or_unevictable(page, vma); //将匿名页面添加到LRU链表中
+    /*a3.设置页表项*/
 setpte:
 	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
 
 	/* No need to invalidate - it was non-present before */
+    /*a4.更新mmu cache(tlb)*/
 	update_mmu_cache(vma, vmf->address, vmf->pte);
 unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
@@ -3424,7 +3435,7 @@ int finish_fault(struct vm_fault *vmf)
 
 	/* Did we COW the page? */
 	if ((vmf->flags & FAULT_FLAG_WRITE) &&
-	    !(vmf->vma->vm_flags & VM_SHARED))
+	    !(vmf->vma->vm_flags & VM_SHARED)) //私有映射写
 		page = vmf->cow_page;
 	else
 		page = vmf->page;
@@ -3506,6 +3517,28 @@ late_initcall(fault_around_debugfs);
  * fault_around_pages() value (and therefore to page order).  This way it's
  * easier to guarantee that we don't cross page table boundaries.
  */
+/* 
+最多映射address周围min(fault_around_bytes>>PAGE_SHIFT,PTRS_PER_PTE)页,可减少缺页中断次数
+-------->vm_end 
+ 
+-------->end_pgoff (下限值) 
+ 
+-------->address 
+ 
+-------->vmf->address (上限值)
+ 
+-------->vm_start 
+================================= 
+PTRS_PER_PTE=128 
+假设 fault_around_bytes=65536 (64K) address = 68K 
+vm_start=0  vm_end=128K
+故 vmf->address=64K 
+上限值 MAX(vmf->address,vm_start) 
+off=68-64=4K 
+start_pgoff=64K 
+end_pgoff = 64 -64 + 127 =127 
+故下限值: MIN(end_pgoff,vm_end对应的page off,64+64-1)
+*/
 static int do_fault_around(struct vm_fault *vmf)
 {
 	unsigned long address = vmf->address, nr_pages, mask;
@@ -3513,9 +3546,11 @@ static int do_fault_around(struct vm_fault *vmf)
 	pgoff_t end_pgoff;
 	int off, ret = 0;
 
+    /*a1.获取最多可映射多少页数*/
 	nr_pages = READ_ONCE(fault_around_bytes) >> PAGE_SHIFT;
 	mask = ~(nr_pages * PAGE_SIZE - 1) & PAGE_MASK;
 
+    /*a2.获取可映射的上限边界值 (虚拟地址,页偏移)*/
 	vmf->address = max(address & mask, vmf->vma->vm_start);
 	off = ((address - vmf->address) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1);
 	start_pgoff -= off;
@@ -3524,6 +3559,7 @@ static int do_fault_around(struct vm_fault *vmf)
 	 *  end_pgoff is either end of page table or end of vma
 	 *  or fault_around_pages() from start_pgoff, depending what is nearest.
 	 */
+    /*a3.获取可映射的下限边界值 (页偏移)*/
 	end_pgoff = start_pgoff -
 		((vmf->address >> PAGE_SHIFT) & (PTRS_PER_PTE - 1)) +
 		PTRS_PER_PTE - 1;
@@ -3538,6 +3574,7 @@ static int do_fault_around(struct vm_fault *vmf)
 		smp_wmb(); /* See comment in __pte_alloc() */
 	}
 
+    /*a4.映射多页*/
 	vmf->vma->vm_ops->map_pages(vmf, start_pgoff, end_pgoff);
 
 	/* Huge page is mapped? Page fault is solved */
@@ -3551,6 +3588,7 @@ static int do_fault_around(struct vm_fault *vmf)
 		goto out;
 
 	/* check if the page fault is solved */
+    /*a5.检测是否完成映射*/
 	vmf->pte -= (vmf->address >> PAGE_SHIFT) - (address >> PAGE_SHIFT);
 	if (!pte_none(*vmf->pte))
 		ret = VM_FAULT_NOPAGE;
@@ -3571,16 +3609,19 @@ static int do_read_fault(struct vm_fault *vmf)
 	 * if page by the offset is not ready to be mapped (cold cache or
 	 * something).
 	 */
+    /*fault_around_bytes  <memory.c line:3453> rounddown_pow_of_two(65536)*/
 	if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
 		ret = do_fault_around(vmf);
 		if (ret)
 			return ret;
 	}
 
+    /*vma->vm_ops->fault() 将数据读入到page cache中*/
 	ret = __do_fault(vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
 		return ret;
 
+    /*设置pte*/
 	ret |= finish_fault(vmf);
 	unlock_page(vmf->page);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
@@ -3596,6 +3637,7 @@ static int do_cow_fault(struct vm_fault *vmf)
 	if (unlikely(anon_vma_prepare(vma)))
 		return VM_FAULT_OOM;
 
+    /*a1.分配cow page*/
 	vmf->cow_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vmf->address);
 	if (!vmf->cow_page)
 		return VM_FAULT_OOM;
@@ -3606,15 +3648,18 @@ static int do_cow_fault(struct vm_fault *vmf)
 		return VM_FAULT_OOM;
 	}
 
+    /*a2.读取文件数据到page*/
 	ret = __do_fault(vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
 		goto uncharge_out;
 	if (ret & VM_FAULT_DONE_COW)
 		return ret;
 
+    /*a3.从page复制数据到cow page*/
 	copy_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma);
 	__SetPageUptodate(vmf->cow_page);
 
+    /*a4.更新pte项 (使用cow page)*/
 	ret |= finish_fault(vmf);
 	unlock_page(vmf->page);
 	put_page(vmf->page);
@@ -3632,6 +3677,7 @@ static int do_shared_fault(struct vm_fault *vmf)
 	struct vm_area_struct *vma = vmf->vma;
 	int ret, tmp;
 
+    /*a1.读文件数据到page并关联上vm_fault*/
 	ret = __do_fault(vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE | VM_FAULT_RETRY)))
 		return ret;
@@ -3640,6 +3686,7 @@ static int do_shared_fault(struct vm_fault *vmf)
 	 * Check if the backing address space wants to know that the page is
 	 * about to become writable
 	 */
+    /*a2.通知后端地址空间可写*/
 	if (vma->vm_ops->page_mkwrite) {
 		unlock_page(vmf->page);
 		tmp = do_page_mkwrite(vmf);
@@ -3650,6 +3697,7 @@ static int do_shared_fault(struct vm_fault *vmf)
 		}
 	}
 
+    /*a3.完成映射*/
 	ret |= finish_fault(vmf);
 	if (unlikely(ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE |
 					VM_FAULT_RETRY))) {
@@ -3676,12 +3724,12 @@ static int do_fault(struct vm_fault *vmf)
 	/* The VMA was not fully populated on mmap() or missing VM_DONTEXPAND */
 	if (!vma->vm_ops->fault)
 		ret = VM_FAULT_SIGBUS;
-	else if (!(vmf->flags & FAULT_FLAG_WRITE))
+	else if (!(vmf->flags & FAULT_FLAG_WRITE)) //读操作引发的异常
 		ret = do_read_fault(vmf);
-	else if (!(vma->vm_flags & VM_SHARED))
+	else if (!(vma->vm_flags & VM_SHARED)) //私有文件映射(发生写时复制COW) 写操作发生的异常
 		ret = do_cow_fault(vmf);
 	else
-		ret = do_shared_fault(vmf);
+		ret = do_shared_fault(vmf); //共享映射(匿名共享与文件共享) 写操作发生的异常
 
 	/* preallocated pagetable is unused: free it */
 	if (vmf->prealloc_pte) {
@@ -3906,7 +3954,7 @@ static int handle_pte_fault(struct vm_fault *vmf)
 
 	/*页表项无效*/
 	if (!vmf->pte) {
-		if (vma_is_anonymous(vmf->vma)) //匿名映射处理
+		if (vma_is_anonymous(vmf->vma)) //匿名私有映射处理
 			return do_anonymous_page(vmf);
 		else
 			return do_fault(vmf); //共享映射与文件映射处理
@@ -4679,3 +4727,115 @@ void ptlock_free(struct page *page)
 	kmem_cache_free(page_ptl_cachep, page->ptl);
 }
 #endif
+
+/* 
+缺页中断处理关键函数流程:
+do_page_fault 
+--> 
+  __do_page_fault
+  -->
+    handle_mm_fault
+    -->
+      __handle_mm_fault
+      -->
+        handle_pte_fault  
+映射分为以下几类:
+匿名私有映射: vma->vm_ops==NULL 
+    首次读(关联的是zero page):
+    do_anonymous_page
+    --->
+        pte_alloc(vma->vm_mm, vmf->pmd, vmf->address)
+ 
+        if (!(vmf->flags & FAULT_FLAG_WRITE) && !mm_forbids_zeropage(vma->vm_mm)) {
+            entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address), vma->vm_page_prot));
+            vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address, &vmf->ptl);
+            goto setpte;
+        }
+    ......
+    setpte:
+	    set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry); 
+    首次写
+        page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+        entry = mk_pte(page, vma->vm_page_prot);
+        if (vma->vm_flags & VM_WRITE)
+		    entry = pte_mkwrite(pte_mkdirty(entry));
+
+	    vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,&vmf->ptl);
+        ......
+    setpte:
+	    set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+    首读之后写:
+        1)匿名页缺页异常读的处理 (首次读)
+        2)写时复制缺页异常处理
+        handle_pte_fault
+        --->
+            vmf->pte = pte_offset_map(vmf->pmd, vmf->address);
+            vmf->orig_pte = *vmf->pte;
+            
+            if (!vmf->pte) {
+                ....
+            }
+            ...
+            entry = vmf->orig_pte;
+            if (vmf->flags & FAULT_FLAG_WRITE) {
+        		if (!pte_write(entry))
+                    return do_wp_page(vmf);
+                    --->
+                        return wp_page_copy(vmf)
+        		entry = pte_mkdirty(entry);
+        	}
+文件私有映射: vma->vm_ops==文件的vm_ops 
+    首次读:
+         do_fault
+         --->
+            if (!(vmf->flags & FAULT_FLAG_WRITE)) //只读异常
+                ret = do_read_fault(vmf);
+                --->
+                    ret = __do_fault(vmf);
+                    ret |= finish_fault(vmf);
+                    --->
+                        page = vmf->page;
+                        ret = alloc_set_pte(vmf, vmf->memcg, page)
+    首次写:
+        do_fault
+        --->
+            if (!(vma->vm_flags & VM_SHARED)) //私有文件映射(发生写时复制COW)
+                ret = do_cow_fault(vmf)
+                --->
+                    vmf->cow_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vmf->address);
+                    ret = __do_fault(vmf);
+                    copy_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma);
+                    ret |= finish_fault(vmf);
+                    --->
+	                    if ((vmf->flags & FAULT_FLAG_WRITE) && !(vmf->vma->vm_flags & VM_SHARED)) //私有映射写
+                            page = vmf->cow_page;
+                        ret = alloc_set_pte(vmf, vmf->memcg, page)
+    首次读之后写:
+        同匿名私有映射
+匿名共享映射: vma->vm_ops==shmem_vm_ops
+文件共享映射: vma->vm_ops==文件的vm_ops 
+    首次读:与文件私有映射一样
+    首次写:
+        do_fault
+        --->
+            ret = do_shared_fault(vmf)
+            --->
+                ret = __do_fault(vmf);
+                if (vma->vm_ops->page_mkwrite) {
+		            tmp = do_page_mkwrite(vmf);
+                }
+                ret |= finish_fault(vmf);
+    首次读之后写:不发生缺页中断???
+映射权限: 
+do_brk_flags/mmap_region 
+vma->vm_page_prot = vm_get_page_prot(vm_flags); 
+---> 
+   return __pgprot(pgprot_val(protection_map[vm_flags &
+				(VM_READ|VM_WRITE|VM_EXEC|VM_SHARED)]) |
+            pgprot_val(arch_vm_get_page_prot(vm_flags)));
+ 
+__PAGE_SHARED 可写 
+__PAGE_COPY   只读 
+私有的映射只有只读(PTE_RDONLY)没有可写属性(PTE_WRITE) 尽管设置了VM_WRITE(PROT_WRITE) 
+共享映射 只要设置了PROT_WRITE,则可读可写
+*/

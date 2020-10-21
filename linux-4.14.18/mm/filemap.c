@@ -2552,6 +2552,11 @@ page_not_uptodate:
 }
 EXPORT_SYMBOL(filemap_fault);
 
+/*
+建立page cache中的页与进程地址空间的映射关系 
+提前建立进程地址空间和page cache的映射关系有利于减少发生缺页中断的次数.
+只与现存的page cache提前建立映射关系,不会创建新的page cache.
+*/
 void filemap_map_pages(struct vm_fault *vmf,
 		pgoff_t start_pgoff, pgoff_t end_pgoff)
 {
@@ -2569,6 +2574,7 @@ void filemap_map_pages(struct vm_fault *vmf,
 		if (iter.index > end_pgoff)
 			break;
 repeat:
+        /*a1.获取对应的页*/
 		page = radix_tree_deref_slot(slot);
 		if (unlikely(!page))
 			goto next;
@@ -2612,7 +2618,7 @@ repeat:
 
 		if (file->f_ra.mmap_miss > 0)
 			file->f_ra.mmap_miss--;
-
+        /*a2.设置address对应的pte值*/
 		vmf->address += (iter.index - last_pgoff) << PAGE_SHIFT;
 		if (vmf->pte)
 			vmf->pte += iter.index - last_pgoff;
