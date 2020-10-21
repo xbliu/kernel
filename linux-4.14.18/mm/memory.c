@@ -2745,7 +2745,7 @@ static int do_wp_page(struct vm_fault *vmf)
 		unlock_page(vmf->page);
 	} else if (unlikely((vma->vm_flags & (VM_WRITE|VM_SHARED)) ==
 					(VM_WRITE|VM_SHARED))) {
-		return wp_page_shared(vmf);
+		return wp_page_shared(vmf); //共享可写映射不进行写时复制
 	}
 
 	/*
@@ -4825,7 +4825,12 @@ do_page_fault
 		            tmp = do_page_mkwrite(vmf);
                 }
                 ret |= finish_fault(vmf);
-    首次读之后写:不发生缺页中断???
+    首次读之后写:不发生缺页中断 ???<需验证>
+    页在写回时会做写保护(pte_wrprotect),此时写会发生缺页中断即写完后再写可能导致缺页中断发生.
+    write_cache_pages
+     --> clear_page_dirty_for_io(page)
+        --> page_mkclean(page)
+            --> page_mkclean_one(page)
 映射权限: 
 do_brk_flags/mmap_region 
 vma->vm_page_prot = vm_get_page_prot(vm_flags); 
