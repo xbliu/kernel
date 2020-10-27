@@ -835,6 +835,13 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 		 * data from the working set, only to cache data that will
 		 * get overwritten with something else, is a waste of memory.
 		 */
+        /*  
+        只有读page cache才会触发refault distance算法.
+        当重写一个页面时，该页面中的数据会被新的数据所取代.
+        这意味着从活动文件列表中驱逐其他东西,以缓存将被其他东西取代的数据,
+        很可能是一种内存的浪费 
+        详见:commit	f0281a00fe80f0e689dd51e68c3aed5f6ef1bf58 (patch) 
+        */ 
         /*a2.设置page的active状态:                                      
           page根椐是否可回收分为可回收与不可回收.
           可回收的page lru可分为两类active与inactive,根椐用途(是否有back store)其下又分anon与file*/
@@ -3110,10 +3117,11 @@ again:
 		if (unlikely(status < 0))
 			break;
 
-		/*
+        /* 
+        用户进程调用mmap()对文件做了shared映射,操作的是同一个page.
 		如果在复制之前未刷新用户共享映射的更改，则会发生缓存别名问题，
 		然后用户映射和内核映射可能会映射到两个不同的缓存行，
-		因此无法保证在复制后iov_iter_copy_from_user_atomic
+        因此无法保证在复制后iov_iter_copy_from_user_atomic 
 		*/
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
