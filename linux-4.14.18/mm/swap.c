@@ -43,11 +43,32 @@
 /* How many pages do we try to swap or page in/out together? */
 int page_cluster;
 
+/*
+新页加入到LRU链表中
+__lru_cache_add
+*/
 static DEFINE_PER_CPU(struct pagevec, lru_add_pvec);
+/*
+将页移动到非活动LRU链表尾
+rotate_reclaimable_page
+*/
 static DEFINE_PER_CPU(struct pagevec, lru_rotate_pvecs);
+/*
+1)脏页/回写页移到非活动LRU链表头
+2)干净的页从非活动LRU头部移动非活动LRU尾部
+deactivate_file_page
+*/
 static DEFINE_PER_CPU(struct pagevec, lru_deactivate_file_pvecs);
+/*
+从匿名LRU链表中移动文件非活动LRU链表头部
+mark_page_lazyfree
+*/
 static DEFINE_PER_CPU(struct pagevec, lru_lazyfree_pvecs);
 #ifdef CONFIG_SMP
+/*
+从非活动LRU中移动活动LRU链表中
+__activate_page
+*/
 static DEFINE_PER_CPU(struct pagevec, activate_page_pvecs);
 #endif
 
@@ -185,6 +206,9 @@ int get_kernel_page(unsigned long start, int write, struct page **pages)
 }
 EXPORT_SYMBOL_GPL(get_kernel_page);
 
+/*
+对pagevec缓存中的页进行移动操作
+*/
 static void pagevec_lru_move_fn(struct pagevec *pvec,
 	void (*move_fn)(struct page *page, struct lruvec *lruvec, void *arg),
 	void *arg)
@@ -194,10 +218,12 @@ static void pagevec_lru_move_fn(struct pagevec *pvec,
 	struct lruvec *lruvec;
 	unsigned long flags = 0;
 
+	/*扫描整个pagevec,将其中的page加入到lru中*/
 	for (i = 0; i < pagevec_count(pvec); i++) {
 		struct page *page = pvec->pages[i];
 		struct pglist_data *pagepgdat = page_pgdat(page);
 
+		/*加锁 page属于不同pglist_data,切换pglist_data需释放锁*/
 		if (pagepgdat != pgdat) {
 			if (pgdat)
 				spin_unlock_irqrestore(&pgdat->lru_lock, flags);
@@ -205,12 +231,19 @@ static void pagevec_lru_move_fn(struct pagevec *pvec,
 			spin_lock_irqsave(&pgdat->lru_lock, flags);
 		}
 
+		/*加入lru中*/
 		lruvec = mem_cgroup_page_lruvec(page, pgdat);
 		(*move_fn)(page, lruvec, arg);
 	}
 	if (pgdat)
 		spin_unlock_irqrestore(&pgdat->lru_lock, flags);
+	/*
+	page->_refcount--因加入缓存中时page->_refcount++
+	1)加入page->_refcount++说明page正在被使用(不能被释放)
+	2)缓存足够多的页时才加入LRU中,加入时有可能page(除了自已)已无人使用
+	*/
 	release_pages(pvec->pages, pvec->nr, pvec->cold);
+	/*重置pagevec缓存空间*/
 	pagevec_reinit(pvec);
 }
 
@@ -219,7 +252,9 @@ static void pagevec_move_tail_fn(struct page *page, struct lruvec *lruvec,
 {
 	int *pgmoved = arg;
 
+	/*可移动的,处理LRU链表上的页*/
 	if (PageLRU(page) && !PageUnevictable(page)) {
+		/*清除active标志,将其移动到非活动LRU链表尾*/
 		del_page_from_lru_list(page, lruvec, page_lru(page));
 		ClearPageActive(page);
 		add_page_to_lru_list_tail(page, lruvec, page_lru(page));
@@ -246,6 +281,13 @@ static void pagevec_move_tail(struct pagevec *pvec)
  */
 void rotate_reclaimable_page(struct page *page)
 {
+	/*
+	页须满足以下条件:
+	1)没有上锁(PG_locked)
+	2)不是脏页
+	3)可移动页
+	4)页处于lru链表中
+	*/
 	if (!PageLocked(page) && !PageDirty(page) &&
 	    !PageUnevictable(page) && PageLRU(page)) {
 		struct pagevec *pvec;
@@ -254,6 +296,7 @@ void rotate_reclaimable_page(struct page *page)
 		get_page(page);
 		local_irq_save(flags);
 		pvec = this_cpu_ptr(&lru_rotate_pvecs);
+		/*移动到非活动LRU链表尾*/
 		if (!pagevec_add(pvec, page) || PageCompound(page))
 			pagevec_move_tail(pvec);
 		local_irq_restore(flags);
@@ -277,6 +320,7 @@ static void __activate_page(struct page *page, struct lruvec *lruvec,
 		int file = page_is_file_cache(page);
 		int lru = page_lru_base_type(page);
 
+		/*从非活动LRU中移动活动LRU链表中*/
 		del_page_from_lru_list(page, lruvec, lru);
 		SetPageActive(page);
 		lru += LRU_ACTIVE;
@@ -305,6 +349,7 @@ static bool need_activate_page_drain(int cpu)
 void activate_page(struct page *page)
 {
 	page = compound_head(page);
+	/*LRU链表中、非活动、不可移动页*/
 	if (PageLRU(page) && !PageActive(page) && !PageUnevictable(page)) {
 		struct pagevec *pvec = &get_cpu_var(activate_page_pvecs);
 
@@ -404,7 +449,11 @@ static void __lru_cache_add(struct page *page)
 {
 	struct pagevec *pvec = &get_cpu_var(lru_add_pvec);
 
-	get_page(page);
+	get_page(page); //page->_refcount++
+	/*
+	pagevec_add返回pagevec还有多少可用空间
+	返回0表示没有可用空间,需将pagevec中缓存的page一次性加入到LRU(pgdat->lruvec/mz->lruvec)中
+	*/
 	if (!pagevec_add(pvec, page) || PageCompound(page))
 		__pagevec_lru_add(pvec);
 	put_cpu_var(lru_add_pvec);
@@ -524,12 +573,24 @@ void lru_cache_add_active_or_unevictable(struct page *page,
  * be write it out by flusher threads as this is much more effective
  * than the single-page writeout from reclaim.
  */
+ /*
+ 1)dirty/writeback page (active/inactive) -> inactive, head, PG_reclaim 
+ 2)inactive, clean -> inactive, tail
+ 3)mapped page(active/inactive) -> none
+ 4)Others -> none
+*/
 static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 			      void *arg)
 {
 	int lru, file;
 	bool active;
 
+	/*
+	以下情况不处理:
+		1)不在LRU链表上
+		2)不可移动页
+		3)进程映射的页
+	*/
 	if (!PageLRU(page))
 		return;
 
@@ -541,14 +602,17 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 		return;
 
 	active = PageActive(page);
+	/*PG_swapbacked依赖swap分区,否则依赖文件页*/
 	file = page_is_file_cache(page);
 	lru = page_lru_base_type(page);
 
+	/*加入到非活动LRU链表头*/
 	del_page_from_lru_list(page, lruvec, lru + active);
 	ClearPageActive(page);
-	ClearPageReferenced(page);
+	ClearPageReferenced(page); // 清除PG_active和PG_referenced
 	add_page_to_lru_list(page, lruvec, lru);
 
+	/*页正在回收或者脏页,设置此页需要回收*/
 	if (PageWriteback(page) || PageDirty(page)) {
 		/*
 		 * PG_reclaim could be raced with end_page_writeback
@@ -561,7 +625,7 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 		 * The page's writeback ends up during pagevec
 		 * We moves tha page into tail of inactive.
 		 */
-		list_move_tail(&page->lru, &lruvec->lists[lru]);
+		list_move_tail(&page->lru, &lruvec->lists[lru]); /*干净页从非活动LRU链表头移向尾部*/
 		__count_vm_event(PGROTATED);
 	}
 
@@ -574,14 +638,20 @@ static void lru_deactivate_file_fn(struct page *page, struct lruvec *lruvec,
 static void lru_lazyfree_fn(struct page *page, struct lruvec *lruvec,
 			    void *arg)
 {
+	/*
+	页必须满足以下条件:
+	LRU链表上、匿名页、依赖swap分区、
+	非swap分区使用的页、可移动页
+	*/
 	if (PageLRU(page) && PageAnon(page) && PageSwapBacked(page) &&
 	    !PageSwapCache(page) && !PageUnevictable(page)) {
 		bool active = PageActive(page);
 
+		/*从匿名LRU链表中移动文件非活动LRU链表头部*/
 		del_page_from_lru_list(page, lruvec,
 				       LRU_INACTIVE_ANON + active);
 		ClearPageActive(page);
-		ClearPageReferenced(page);
+		ClearPageReferenced(page); //清除PG_active PG_referenced
 		/*
 		 * lazyfree pages are clean anonymous pages. They have
 		 * SwapBacked flag cleared to distinguish normal anonymous
@@ -605,23 +675,27 @@ void lru_add_drain_cpu(int cpu)
 {
 	struct pagevec *pvec = &per_cpu(lru_add_pvec, cpu);
 
+	/*a1.将缓存的page 加入LRU*/
 	if (pagevec_count(pvec))
 		__pagevec_lru_add(pvec);
 
+	/*a2.将rotate_pvecs中的page移入到INACTIVE LRU(file active->file inactive/anon active->anon inactive)*/
 	pvec = &per_cpu(lru_rotate_pvecs, cpu);
 	if (pagevec_count(pvec)) {
 		unsigned long flags;
 
 		/* No harm done if a racing interrupt already did this */
 		local_irq_save(flags);
-		pagevec_move_tail(pvec);
+		pagevec_move_tail(pvec); //移入到INACTIVE LRU中
 		local_irq_restore(flags);
 	}
 
+	/*a3.将deactivate_file_pvecs中的page移入inactive LRU*/
 	pvec = &per_cpu(lru_deactivate_file_pvecs, cpu);
 	if (pagevec_count(pvec))
 		pagevec_lru_move_fn(pvec, lru_deactivate_file_fn, NULL);
 
+	/*active anon ->inactive file*/
 	pvec = &per_cpu(lru_lazyfree_pvecs, cpu);
 	if (pagevec_count(pvec))
 		pagevec_lru_move_fn(pvec, lru_lazyfree_fn, NULL);
@@ -664,6 +738,14 @@ void deactivate_file_page(struct page *page)
  */
 void mark_page_lazyfree(struct page *page)
 {
+	/*
+	页必须满足以下条件:
+	1)LRU链表上
+	2)匿名页
+	3)依赖swap分区
+	4)非swap分区使用的页
+	5)可移动页
+	*/
 	if (PageLRU(page) && PageAnon(page) && PageSwapBacked(page) &&
 	    !PageSwapCache(page) && !PageUnevictable(page)) {
 		struct pagevec *pvec = &get_cpu_var(lru_lazyfree_pvecs);
@@ -776,6 +858,7 @@ void release_pages(struct page **pages, int nr, bool cold)
 			continue;
 		}
 
+		/*page 引用数为0则回收*/
 		page = compound_head(page);
 		if (!put_page_testzero(page))
 			continue;
@@ -880,6 +963,7 @@ void lru_add_page_tail(struct page *page, struct page *page_tail,
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
+/*加入到LRU链表中*/
 static void __pagevec_lru_add_fn(struct page *page, struct lruvec *lruvec,
 				 void *arg)
 {
@@ -889,6 +973,7 @@ static void __pagevec_lru_add_fn(struct page *page, struct lruvec *lruvec,
 
 	VM_BUG_ON_PAGE(PageLRU(page), page);
 
+	/*加入相应的类型的LRU中*/
 	SetPageLRU(page);
 	add_page_to_lru_list(page, lruvec, lru);
 	update_page_reclaim_stat(lruvec, file, active);

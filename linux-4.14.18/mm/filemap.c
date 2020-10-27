@@ -3110,7 +3110,12 @@ again:
 		if (unlikely(status < 0))
 			break;
 
-		if (mapping_writably_mapped(mapping)) //???
+		/*
+		如果在复制之前未刷新用户共享映射的更改，则会发生缓存别名问题，
+		然后用户映射和内核映射可能会映射到两个不同的缓存行，
+		因此无法保证在复制后iov_iter_copy_from_user_atomic
+		*/
+		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
         /*a5.copy数据到page*/
