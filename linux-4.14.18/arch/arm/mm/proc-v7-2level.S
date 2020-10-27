@@ -104,9 +104,9 @@ ENTRY(cpu_v7_set_pte_ext)
 	tstne	r1, #L_PTE_VALID
 	eorne	r1, r1, #L_PTE_NONE
 	tstne	r1, #L_PTE_NONE
-	moveq	r3, #0
+	moveq	r3, #0  //L_PTE_YOUNG不存在且pte有效时 r3=0
 
- ARM(	str	r3, [r0, #2048]! )
+ ARM(	str	r3, [r0, #2048]! ) //写入硬件页表 在软件页表+2048
  THUMB(	add	r0, r0, #2048 )
  THUMB(	str	r3, [r0] )
 	ALT_SMP(W(nop))

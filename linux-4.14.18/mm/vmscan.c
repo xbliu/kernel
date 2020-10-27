@@ -872,7 +872,9 @@ static enum page_references page_check_references(struct page *page,
 	if (vm_flags & VM_LOCKED)
 		return PAGEREF_RECLAIM;
 
+	//有映射pte
 	if (referenced_ptes) {
+		/*匿名页 将其加入active LRU*/
 		if (PageSwapBacked(page))
 			return PAGEREF_ACTIVATE;
 		/*
@@ -889,17 +891,20 @@ static enum page_references page_check_references(struct page *page,
 		 * so that recently deactivated but used pages are
 		 * quickly recovered.
 		 */
-		SetPageReferenced(page);
+		SetPageReferenced(page); //文件页设置PageReferenced
 
+		/*PageReferenced置位或不止一个进程映射文件 active LRU*/
 		if (referenced_page || referenced_ptes > 1)
 			return PAGEREF_ACTIVATE;
 
 		/*
 		 * Activate file-backed executable pages after first usage.
 		 */
+		/*可执行文件 active LRU*/ 
 		if (vm_flags & VM_EXEC)
 			return PAGEREF_ACTIVATE;
 
+		/*继续保持在原LRU中*/
 		return PAGEREF_KEEP;
 	}
 

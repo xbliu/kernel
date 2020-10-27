@@ -1796,7 +1796,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		vm_flags = vma->vm_flags;
 	} else if (vm_flags & VM_SHARED) {
 		/*
-		b1.设置匿名映射(dev/zero)
+		b1.设置匿名共享映射(dev/zero)
 		vma->vm_ops = &shmem_vm_ops
 		*/
 		error = shmem_zero_setup(vma);

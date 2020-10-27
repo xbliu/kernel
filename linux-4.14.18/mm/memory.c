@@ -3979,6 +3979,10 @@ static int handle_pte_fault(struct vm_fault *vmf)
 			return do_wp_page(vmf);
 		entry = pte_mkdirty(entry);
 	}
+	/*
+	页项存在 YOUNG位未设置触发中断
+	mmap时表示页的再次访问
+	*/
 	entry = pte_mkyoung(entry);
 	if (ptep_set_access_flags(vmf->vma, vmf->address, vmf->pte, entry,
 				vmf->flags & FAULT_FLAG_WRITE)) {
