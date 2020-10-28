@@ -961,8 +961,22 @@ struct reclaim_stat {
  * shrink_page_list() returns the number of reclaimed pages
  */
 /*
-回收page分为匿名页与文件页:
-MAP_PRIVATE/MAP_SHARED 与 匿名页与文件页的关系:                                                 :
+1.几个概念:
+代码角度来看:
+	匿名页:page->mapping存储的是struct anon_vma指针,低位PAGE_MAPPING_ANON
+	文件页:page->mapping存储的是struct address_space指针(与文件相关的页映射,不管是普通文件还是内存文件)
+anon LRU: 匿名页与特殊文件相关的页(如shm文件相关页)
+file LRU: 存储的是与普通文件相关的page cache
+PageSwapBacked:以swap分区(可以是内存也可是存储介质)作为后备空间
+普通文件page cache    					!PageSwapBacked  --> file  	LRU
+匿名页 								PageSwapBacked   --> anon  	LRU
+shm文件page cache(共享映射/文件页)			PageSwapBacked   --> anon 	LRU
+
+2.匿名页产生的情况:
+	1).匿名私有映射(do_anonymous_page) malloc/mmap<MAP_PRIVATE> 写时复制
+	2).私有文件映射写      (文件mmap map_private && prot_read)  do_cow_fault
+	3).迁移页面
+	4).do_swap_page 从swap分区读回数据
 */
 static unsigned long shrink_page_list(struct list_head *page_list,
 				      struct pglist_data *pgdat,
@@ -1175,7 +1189,8 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		 * Lazyfree page could be freed directly
 		 */
         /*
-        对于匿名页且有后端存储,将其交换到swap空间后进行回收
+        对于匿名页且有后备存储,将其交换到swap空间后进行回收(如匿名私有映射)
+        swap页无PageSwapBacked
         */
 		if (PageAnon(page) && PageSwapBacked(page)) {
 			if (!PageSwapCache(page)) {
@@ -1239,7 +1254,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
         /*
         脏页处理:
-        1)是文件脏页
+        1)是普通文件脏页
         2)将页面内容换出
         */
 		if (PageDirty(page)) {
@@ -1253,6 +1268,10 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 			 * the rest of the LRU for clean pages and see
 			 * the same dirty pages again (PageReclaim).
 			 */
+			/*
+			 普通文件pagecache 直接回收或未正在被LRU回收或LRU链表尾脏页不多,简单的标记并不回收.
+			 PGDAT_DIRTY: 扫描时LRU链表尾脏页较多时设置
+			*/ 
 			if (page_is_file_cache(page) &&
 			    (!current_is_kswapd() || !PageReclaim(page) ||
 			     !test_bit(PGDAT_DIRTY, &pgdat->flags))) {
@@ -1281,7 +1300,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 			 * starts and then write it out here.
 			 */
 			try_to_unmap_flush_dirty();
-			switch (pageout(page, mapping, sc)) {
+			switch (pageout(page, mapping, sc)) { //换出
 			case PAGE_KEEP:
 				goto keep_locked;
 			case PAGE_ACTIVATE:
@@ -1349,7 +1368,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 			}
 		}
 
-        /**/
+        /*swap page*/
 		if (PageAnon(page) && !PageSwapBacked(page)) {
 			/* follow __remove_mapping for reference */
 			if (!page_ref_freeze(page, 1))
@@ -1361,7 +1380,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 			count_vm_event(PGLAZYFREED);
 			count_memcg_page_event(page, PGLAZYFREED);
-		} else if (!mapping || !__remove_mapping(mapping, page, true))
+		} else if (!mapping || !__remove_mapping(mapping, page, true)) //移除mapping
 			goto keep_locked;
 		/*
 		 * At this point, we have no other references and there is

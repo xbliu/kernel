@@ -1809,7 +1809,7 @@ alloc_nohuge:		page = shmem_alloc_and_acct_page(gfp, inode,
 		}
 		mem_cgroup_commit_charge(page, memcg, false,
 				PageTransHuge(page));
-		lru_cache_add_anon(page);
+		lru_cache_add_anon(page); //加入到匿名LRU链表中
 
 		spin_lock_irq(&info->lock);
 		info->alloced += 1 << compound_order(page);
