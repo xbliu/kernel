@@ -1754,7 +1754,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	vma->vm_pgoff = pgoff;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 
-	/*a4.文件映射与共享映射的私有处理*/
+	/*a4.文件映射与匿名共享映射处理*/
 	if (file) {
 		if (vm_flags & VM_DENYWRITE) {
 			error = deny_write_access(file);

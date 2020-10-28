@@ -528,6 +528,9 @@
  * Atomically adds @a to @v, so long as @v was not already @u.
  * Returns non-zero if @v was not @u, and zero otherwise.
  */
+/*
+只要原子变量v不等于u，那么就执行原子变量v加a的操作。如果v不等于u，返回非0值，否则返回0值 
+*/
 static inline int atomic_add_unless(atomic_t *v, int a, int u)
 {
 	return __atomic_add_unless(v, a, u) != u;

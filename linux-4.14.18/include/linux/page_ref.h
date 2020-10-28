@@ -154,6 +154,9 @@ static inline int page_ref_dec_return(struct page *page)
 
 static inline int page_ref_add_unless(struct page *page, int nr, int u)
 {
+    /*
+    只要原子变量v不等于u，那么就执行原子变量v加a的操作。如果v不等于u，返回非0值，否则返回0值 
+    */
 	int ret = atomic_add_unless(&page->_refcount, nr, u);
 
 	if (page_ref_tracepoint_active(__tracepoint_page_ref_mod_unless))
