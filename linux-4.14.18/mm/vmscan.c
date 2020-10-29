@@ -964,7 +964,7 @@ struct reclaim_stat {
 1.几个概念:
 代码角度来看:
 	匿名页:page->mapping存储的是struct anon_vma指针,低位PAGE_MAPPING_ANON
-	文件页:page->mapping存储的是struct address_space指针(与文件相关的页映射,不管是普通文件还是内存文件)
+	文件页:page->mapping存储的是struct address_space指针(与文件地址空间相关联的page,不管是普通文件还是内存文件)
 anon LRU: 匿名页与特殊文件相关的页(如shm文件相关页)
 file LRU: 存储的是与普通文件相关的page cache
 PageSwapBacked:以swap分区(可以是内存也可是存储介质)作为后备空间
@@ -973,10 +973,56 @@ PageSwapBacked:以swap分区(可以是内存也可是存储介质)作为后备�
 shm文件page cache(共享映射/文件页)			PageSwapBacked   --> anon 	LRU
 
 2.匿名页产生的情况:
-	1).匿名私有映射(do_anonymous_page) malloc/mmap<MAP_PRIVATE> 写时复制
-	2).私有文件映射写      (文件mmap map_private && prot_read)  do_cow_fault
-	3).迁移页面
-	4).do_swap_page 从swap分区读回数据
+	1)匿名私有映射(do_anonymous_page) malloc/mmap<MAP_PRIVATE> 写时复制
+	2)私有文件映射写      (文件mmap map_private && prot_read)  do_cow_fault
+	3)迁移页面
+	4)do_swap_page 从swap分区读回数据
+	
+3.PageDirty
+1) 共享映射 <共享文件映射,匿名共享映射(shm)>
+do_shared_fault
+--->
+	if (vma->vm_ops->page_mkwrite) {
+		tmp = do_page_mkwrite(vmf);
+		--->
+			ret = vmf->vma->vm_ops->page_mkwrite(vmf);		
+	}
+	
+	fault_dirty_shared_page(vma, vmf->page);
+	--->
+		dirtied = set_page_dirty(page); //标记脏页
+可看缺页中断中会设置页为脏
+a)vm_ops == generic_file_vm_ops
+	page_mkwrite==>filemap_page_mkwrite
+	--->
+		set_page_dirty(page);
+  writeback之后会设置对应的页表项置为只读,再次写page时,由于权限不够触发缺页异常do_wp_page()
+b)vm_ops == shmem_vm_ops
+	no page_mkwrite
+2) write page cache
+block_write_end
+--->
+	__block_commit_write
+	--->
+		mark_buffer_dirty(bh)
+		--->
+			if (!test_set_buffer_dirty(bh)) {
+				struct page *page = bh->b_page;
+				if (!TestSetPageDirty(page)) { //page dirty
+						...
+				}
+			}
+3)有后备存储的匿名页 <如匿名私有映射>
+add_to_swap
+--->
+	set_page_dirty(page);
+	--->
+		if (!PageDirty(page)) {
+			if (!TestSetPageDirty(page))
+				return 1;
+		}
+
+		
 */
 static unsigned long shrink_page_list(struct list_head *page_list,
 				      struct pglist_data *pgdat,
@@ -1228,7 +1274,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 				may_enter_fs = 1;
 
 				/* Adding to swap updated mapping */
-				mapping = page_mapping(page);
+				mapping = page_mapping(page); //swap的address space
 			}
 		} else if (unlikely(PageTransHuge(page))) {
 			/* Split file THP */
@@ -1255,7 +1301,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
         /*
         脏页处理:
         1)是普通文件脏页
-        2)将页面内容换出
+		2)将页面内容换出 {普通文件页,shm页,匿名页}
         */
 		if (PageDirty(page)) {
 			/*
@@ -1802,6 +1848,7 @@ putback_inactive_pages(struct lruvec *lruvec, struct list_head *page_list)
 			int numpages = hpage_nr_pages(page);
 			reclaim_stat->recent_rotated[file] += numpages;
 		}
+		/*检查page是否可以释放*/
 		if (put_page_testzero(page)) {
 			__ClearPageLRU(page);
 			__ClearPageActive(page);
@@ -1868,7 +1915,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 			return SWAP_CLUSTER_MAX;
 	}
 
-    /*将pagevec中缓存的pages刷新到对应LRU链表中*/
+    /*a1.将pagevec中缓存的pages刷新到对应LRU链表中*/
 	lru_add_drain();
 
 	if (!sc->may_unmap)
@@ -1876,7 +1923,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 
 	spin_lock_irq(&pgdat->lru_lock);
 
-    /*分离出符合条件回收页*/
+    /*a2.分离出符合条件回收页*/
 	nr_taken = isolate_lru_pages(nr_to_scan, lruvec, &page_list,
 				     &nr_scanned, sc, isolate_mode, lru);
 
@@ -1899,7 +1946,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	if (nr_taken == 0)
 		return 0;
 
-    /*收缩 page_list*/
+    /*a3.收缩 page_list*/
 	nr_reclaimed = shrink_page_list(&page_list, pgdat, sc, 0,
 				&stat, false);
 
@@ -1917,12 +1964,14 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 				   nr_reclaimed);
 	}
 
+	/*a4.将不能回收的页得新加入inactive RU*/
 	putback_inactive_pages(lruvec, &page_list);
 
 	__mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
 
 	spin_unlock_irq(&pgdat->lru_lock);
 
+	/*a5.putback_inactive_pages会再次检查page_list中的页是否可以释放*/
 	mem_cgroup_uncharge_list(&page_list);
 	free_hot_cold_page_list(&page_list, true);
 
@@ -2087,6 +2136,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
 	int file = is_file_lru(lru);
 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
 
+	/*a1.刷新缓存页*/
 	lru_add_drain();
 
 	if (!sc->may_unmap)
@@ -2094,6 +2144,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
 
 	spin_lock_irq(&pgdat->lru_lock);
 
+	/*a2.最多隔离nr_to_scan页*/
 	nr_taken = isolate_lru_pages(nr_to_scan, lruvec, &l_hold,
 				     &nr_scanned, sc, isolate_mode, lru);
 
@@ -2105,16 +2156,19 @@ static void shrink_active_list(unsigned long nr_to_scan,
 
 	spin_unlock_irq(&pgdat->lru_lock);
 
+	/*a3.将隔离页加入到l_inactive/l_active list中*/
 	while (!list_empty(&l_hold)) {
 		cond_resched();
 		page = lru_to_page(&l_hold);
 		list_del(&page->lru);
 
+		/*b1.不可回收页重新加入合适的lru list*/
 		if (unlikely(!page_evictable(page))) {
 			putback_lru_page(page);
 			continue;
 		}
 
+		/*buffer head超过限制,释放page cache对应的buffer head空间*/
 		if (unlikely(buffer_heads_over_limit)) {
 			if (page_has_private(page) && trylock_page(page)) {
 				if (page_has_private(page))
@@ -2123,6 +2177,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
 			}
 		}
 
+		/*可执行文件映射应给予更多机会留在内存当中*/
 		if (page_referenced(page, 0, sc->target_mem_cgroup,
 				    &vm_flags)) {
 			nr_rotated += hpage_nr_pages(page);
@@ -2135,6 +2190,10 @@ static void shrink_active_list(unsigned long nr_to_scan,
 			 * IO, plus JVM can create lots of anon VM_EXEC pages,
 			 * so we ignore them here.
 			 */
+			/*
+			识别出被引用的、有文件支持的活动页，并让它们在活动列表中多跑一趟.
+			这样在适度的内存压力下,可执行代码就会有更好的机会留在内存中
+			*/
 			if ((vm_flags & VM_EXEC) && page_is_file_cache(page)) {
 				list_add(&page->lru, &l_active);
 				continue;
@@ -2157,11 +2216,13 @@ static void shrink_active_list(unsigned long nr_to_scan,
 	 */
 	reclaim_stat->recent_rotated[file] += nr_rotated;
 
+	/*a4.移入到相应的LRU中*/
 	nr_activate = move_active_pages_to_lru(lruvec, &l_active, &l_hold, lru);
 	nr_deactivate = move_active_pages_to_lru(lruvec, &l_inactive, &l_hold, lru - LRU_ACTIVE);
 	__mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
 	spin_unlock_irq(&pgdat->lru_lock);
 
+	/*a5.释放空间*/
 	mem_cgroup_uncharge_list(&l_hold);
 	free_hot_cold_page_list(&l_hold, true);
 	trace_mm_vmscan_lru_shrink_active(pgdat->node_id, nr_taken, nr_activate,
@@ -2252,6 +2313,7 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 				 struct scan_control *sc)
 {
 	if (is_active_lru(lru)) {
+		/*inactive list页低于阀值则收缩active lru list*/
 		if (inactive_list_is_low(lruvec, is_file_lru(lru),
 					 memcg, sc, true))
 			shrink_active_list(nr_to_scan, lruvec, sc, lru);
@@ -2516,6 +2578,11 @@ static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memc
 		unsigned long nr_anon, nr_file, percentage;
 		unsigned long nr_scanned;
 
+		/*
+		收缩lru list:
+		1)active lru list -> inactive lru list
+		2)inactive lru list -> free pages
+		*/
 		for_each_evictable_lru(lru) {
 			if (nr[lru]) {
 				nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
@@ -2713,9 +2780,11 @@ static bool shrink_node(pg_data_t *pgdat, struct scan_control *sc)
 			reclaimed = sc->nr_reclaimed;
 			scanned = sc->nr_scanned;
 
+			/*收缩inode 内存*/
 			shrink_node_memcg(pgdat, memcg, sc, &lru_pages);
 			node_lru_pages += lru_pages;
 
+			/*收缩slab*/
 			if (memcg)
 				shrink_slab(sc->gfp_mask, pgdat->node_id,
 					    memcg, sc->nr_scanned - scanned,
@@ -2895,6 +2964,7 @@ static void shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 		if (zone->zone_pgdat == last_pgdat)
 			continue;
 		last_pgdat = zone->zone_pgdat;
+		/*收缩node*/
 		shrink_node(zone->zone_pgdat, sc);
 	}
 
@@ -3285,6 +3355,9 @@ static bool pgdat_balanced(pg_data_t *pgdat, int order, int classzone_idx)
 	unsigned long mark = -1;
 	struct zone *zone;
 
+	/*
+	扫描[0,classzone_idx] zone中看有没有符合classzone_idx的高水位线要求
+	*/
 	for (i = 0; i <= classzone_idx; i++) {
 		zone = pgdat->node_zones + i;
 
@@ -3464,7 +3537,7 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int classzone_idx)
 		 * pages are rotated regardless of classzone as this is
 		 * about consistent aging.
 		 */
-		age_active_anon(pgdat, &sc);
+		age_active_anon(pgdat, &sc); //收缩active list
 
 		/*
 		 * If we're getting trouble reclaiming, start doing writepage
@@ -3485,7 +3558,7 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int classzone_idx)
 		 * enough pages are already being scanned that that high
 		 * watermark would be met at 100% efficiency.
 		 */
-		if (kswapd_shrink_node(pgdat, &sc))
+		if (kswapd_shrink_node(pgdat, &sc)) //收缩此node内存
 			raise_priority = false;
 
 		/*

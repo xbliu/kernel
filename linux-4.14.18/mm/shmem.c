@@ -1648,6 +1648,7 @@ repeat:
 	sbinfo = SHMEM_SB(inode->i_sb);
 	charge_mm = vma ? vma->vm_mm : current->mm;
 
+    /*从swap分区读*/
 	if (swap.val) {
 		/* Look it up and read it in.. */
 		page = lookup_swap_cache(swap, NULL, 0);
@@ -1724,7 +1725,7 @@ repeat:
 		set_page_dirty(page);
 		swap_free(swap);
 
-	} else {
+	} else { //新分配one page
 		if (vma && userfaultfd_missing(vma)) {
 			*fault_type = handle_userfault(vmf, VM_UFFD_MISSING);
 			return 0;
