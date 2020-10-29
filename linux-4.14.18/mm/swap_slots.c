@@ -124,6 +124,7 @@ static int alloc_swap_slot_cache(unsigned int cpu)
 	 * as kvzalloc could trigger reclaim and get_swap_page,
 	 * which can lock swap_slots_cache_mutex.
 	 */
+    /*为alloc cache与reclaim cache分配空间*/
 	slots = kvzalloc(sizeof(swp_entry_t) * SWAP_SLOTS_CACHE_SIZE,
 			 GFP_KERNEL);
 	if (!slots)
@@ -146,6 +147,8 @@ static int alloc_swap_slot_cache(unsigned int cpu)
 		spin_lock_init(&cache->free_lock);
 		cache->lock_initialized = true;
 	}
+
+    /*初始化per_cpu的swap_slots_cache*/
 	cache->nr = 0;
 	cache->cur = 0;
 	cache->n_ret = 0;
@@ -243,6 +246,7 @@ int enable_swap_slots_cache(void)
 		goto out_unlock;
 	}
 
+    /*为每个cpu的swap_slots_cache进行初始化*/
 	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "swap_slots_cache",
 				alloc_swap_slot_cache, free_slot_cache);
 	if (WARN_ONCE(ret < 0, "Cache allocation failed (%s), operating "
@@ -282,6 +286,7 @@ int free_swap_slot(swp_entry_t entry)
 			spin_unlock_irq(&cache->free_lock);
 			goto direct_free;
 		}
+        /*超过SWAP_SLOTS_CACHE_SIZE,一次性释放到global pool*/
 		if (cache->n_ret >= SWAP_SLOTS_CACHE_SIZE) {
 			/*
 			 * Return slots to global pool.
@@ -292,11 +297,12 @@ int free_swap_slot(swp_entry_t entry)
 			swapcache_free_entries(cache->slots_ret, cache->n_ret);
 			cache->n_ret = 0;
 		}
+        /*释放到slots_ret中*/
 		cache->slots_ret[cache->n_ret++] = entry;
 		spin_unlock_irq(&cache->free_lock);
 	} else {
 direct_free:
-		swapcache_free_entries(&entry, 1);
+		swapcache_free_entries(&entry, 1); //直接释放
 	}
 
 	return 0;
@@ -330,12 +336,14 @@ swp_entry_t get_swap_page(struct page *page)
 		mutex_lock(&cache->alloc_lock);
 		if (cache->slots) {
 repeat:
+            /*直接从alloc cache分配*/
 			if (cache->nr) {
 				pentry = &cache->slots[cache->cur++];
 				entry = *pentry;
 				pentry->val = 0;
 				cache->nr--;
 			} else {
+                /*从global pool里补充*/
 				if (refill_swap_slots_cache(cache))
 					goto repeat;
 			}
