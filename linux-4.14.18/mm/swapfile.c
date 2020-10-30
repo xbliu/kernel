@@ -2951,6 +2951,14 @@ static unsigned long read_swap_header(struct swap_info_struct *p,
 	 * the swp_entry_t or the architecture definition of a
 	 * swap pte.
 	 */
+    /*
+    一个swap设备最多拥有多少页,由以下两方面因素限制:
+    1)swp_entry_t类型中swap偏移的位数
+    2)不同架构所定义的swap pte的位数
+    为了找到最大可能的位掩码,创建一个交换类型为0，交换偏移量为~0UL的swap entry， 
+    编码为swap pte，再次解码为swp_entry_t，最后提取swap偏移量。 
+    这将屏蔽初始 ~0UL 掩码中所有不能在swp_entry_t 或 swap pte 的架构定义中编码的位
+    */
 	maxpages = swp_offset(pte_to_swp_entry(
 			swp_entry_to_pte(swp_entry(0, ~0UL)))) + 1;
 	last_page = swap_header->info.last_page;
@@ -3146,6 +3154,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		error = -EINVAL;
 		goto bad_swap;
 	}
+    /*读取swap header*/
 	page = read_mapping_page(mapping, 0, swap_file);
 	if (IS_ERR(page)) {
 		error = PTR_ERR(page);
