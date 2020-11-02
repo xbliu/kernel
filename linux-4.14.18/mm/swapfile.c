@@ -476,10 +476,12 @@ static void inc_cluster_info_page(struct swap_info_struct *p,
 
 	if (!cluster_info)
 		return;
+    /*从free_clusters列表中移除*/
 	if (cluster_is_free(&cluster_info[idx]))
 		alloc_cluster(p, idx);
 
 	VM_BUG_ON(cluster_count(&cluster_info[idx]) >= SWAPFILE_CLUSTER);
+    /*设置cluster可用页数*/
 	cluster_set_count(&cluster_info[idx],
 		cluster_count(&cluster_info[idx]) + 1);
 }
@@ -2343,7 +2345,7 @@ add_swap_extent(struct swap_info_struct *sis, unsigned long start_page,
 	struct swap_extent *new_se;
 	struct list_head *lh;
 
-	if (start_page == 0) {
+	if (start_page == 0) { //首个swap extent
 		se = &sis->first_swap_extent;
 		sis->curr_swap_extent = se;
 		se->start_page = 0;
@@ -2351,6 +2353,7 @@ add_swap_extent(struct swap_info_struct *sis, unsigned long start_page,
 		se->start_block = start_block;
 		return 1;
 	} else {
+        /*尝试与最后一个swap extent合并*/
 		lh = sis->first_swap_extent.list.prev;	/* Highest extent */
 		se = list_entry(lh, struct swap_extent, list);
 		BUG_ON(se->start_page + se->nr_pages != start_page);
@@ -2364,6 +2367,7 @@ add_swap_extent(struct swap_info_struct *sis, unsigned long start_page,
 	/*
 	 * No merge.  Insert a new extent, preserving ordering.
 	 */
+    /*分配swap extent,并加入到列表中*/
 	new_se = kmalloc(sizeof(*se), GFP_KERNEL);
 	if (new_se == NULL)
 		return -ENOMEM;
@@ -2413,6 +2417,7 @@ static int setup_swap_extents(struct swap_info_struct *sis, sector_t *span)
 	struct inode *inode = mapping->host;
 	int ret;
 
+    /*块设备整个空间都是连续的*/
 	if (S_ISBLK(inode->i_mode)) {
 		ret = add_swap_extent(sis, 0, sis->max, 0);
 		*span = sis->pages;
@@ -2429,6 +2434,7 @@ static int setup_swap_extents(struct swap_info_struct *sis, sector_t *span)
 		return ret;
 	}
 
+    /*文件整个地址空间不一定连续,可能分多个swap extent*/
 	return generic_swapfile_activate(sis, swap_file, span);
 }
 
@@ -2834,6 +2840,7 @@ static struct swap_info_struct *alloc_swap_info(void)
 	if (!p)
 		return ERR_PTR(-ENOMEM);
 
+    /*从swap_info[]中查找可用的空间*/
 	spin_lock(&swap_lock);
 	for (type = 0; type < nr_swapfiles; type++) {
 		if (!(swap_info[type]->flags & SWP_USED))
@@ -2844,6 +2851,10 @@ static struct swap_info_struct *alloc_swap_info(void)
 		kfree(p);
 		return ERR_PTR(-EPERM);
 	}
+    /*
+    在现有nr_swapfiles个swap_info中查找,若无则扩大空间,在尾部添加
+    有则使用之前释放的.
+    */
 	if (type >= nr_swapfiles) {
 		p->type = type;
 		swap_info[type] = p;
@@ -2862,6 +2873,7 @@ static struct swap_info_struct *alloc_swap_info(void)
 		 * would be relying on p->type to remain valid.
 		 */
 	}
+    /*初始化swap areas*/
 	INIT_LIST_HEAD(&p->first_swap_extent.list);
 	plist_node_init(&p->list, 0);
 	for_each_node(i)
@@ -3016,6 +3028,7 @@ static int setup_swap_map_and_extents(struct swap_info_struct *p,
 	cluster_list_init(&p->free_clusters);
 	cluster_list_init(&p->discard_clusters);
 
+    /*标记坏页*/
 	for (i = 0; i < swap_header->info.nr_badpages; i++) {
 		unsigned int page_nr = swap_header->info.badpages[i];
 		if (page_nr == 0 || page_nr > swap_header->info.last_page)
@@ -3044,7 +3057,7 @@ static int setup_swap_map_and_extents(struct swap_info_struct *p,
 		inc_cluster_info_page(p, cluster_info, 0);
 		p->max = maxpages;
 		p->pages = nr_good_pages;
-		nr_extents = setup_swap_extents(p, span);
+		nr_extents = setup_swap_extents(p, span); //设置swap extent
 		if (nr_extents < 0)
 			return nr_extents;
 		nr_good_pages = p->pages;
@@ -3119,6 +3132,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	if (!swap_avail_heads)
 		return -ENOMEM;
 
+    /*a1.分配 swap area对应的信息*/
 	p = alloc_swap_info();
 	if (IS_ERR(p))
 		return PTR_ERR(p);
@@ -3131,6 +3145,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		name = NULL;
 		goto bad_swap;
 	}
+    /*a2.设置swap设备 (交换分区或交换文件)*/
 	swap_file = file_open_name(name, O_RDWR|O_LARGEFILE, 0);
 	if (IS_ERR(swap_file)) {
 		error = PTR_ERR(swap_file);
@@ -3154,7 +3169,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		error = -EINVAL;
 		goto bad_swap;
 	}
-    /*读取swap header*/
+    /*a3.读取swap header*/
 	page = read_mapping_page(mapping, 0, swap_file);
 	if (IS_ERR(page)) {
 		error = PTR_ERR(page);
@@ -3168,6 +3183,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		goto bad_swap;
 	}
 
+    /*a4.分配页槽对应的计数数组*/
 	/* OK, set up the swap map and apply the bad block list */
 	swap_map = vzalloc(maxpages);
 	if (!swap_map) {
@@ -3178,6 +3194,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	if (bdi_cap_stable_pages_required(inode_to_bdi(inode)))
 		p->flags |= SWP_STABLE_WRITES;
 
+    /*a5.ssd设备 分簇初始化*/
 	if (p->bdev && blk_queue_nonrot(bdev_get_queue(p->bdev))) {
 		int cpu;
 		unsigned long ci, nr_cluster;
@@ -3217,6 +3234,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	if (error)
 		goto bad_swap;
 
+    /*a6.初始化swap map*/
 	nr_extents = setup_swap_map_and_extents(p, swap_header, swap_map,
 		cluster_info, maxpages, &span);
 	if (unlikely(nr_extents < 0)) {
@@ -3258,6 +3276,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		}
 	}
 
+    /*a7.初始化address space*/
 	error = init_swap_address_space(p->type, maxpages);
 	if (error)
 		goto bad_swap;

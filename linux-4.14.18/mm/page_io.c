@@ -168,7 +168,7 @@ int generic_swapfile_activate(struct swap_info_struct *sis,
 	 * to be very smart.
 	 */
 	probe_block = 0;
-	page_no = 0;
+	page_no = 0; //页序号
 	last_block = i_size_read(inode) >> blkbits;
 	while ((probe_block + blocks_per_page) <= last_block &&
 			page_no < sis->max) {
@@ -177,6 +177,7 @@ int generic_swapfile_activate(struct swap_info_struct *sis,
 
 		cond_resched();
 
+        /*逻辑块对应的物理块号*/
 		first_block = bmap(inode, probe_block);
 		if (first_block == 0)
 			goto bad_bmap;
@@ -184,11 +185,13 @@ int generic_swapfile_activate(struct swap_info_struct *sis,
 		/*
 		 * It must be PAGE_SIZE aligned on-disk
 		 */
+        /*物理块号需页对齐*/
 		if (first_block & (blocks_per_page - 1)) {
 			probe_block++;
 			goto reprobe;
 		}
 
+        /*页内块是否连续*/
 		for (block_in_page = 1; block_in_page < blocks_per_page;
 					block_in_page++) {
 			sector_t block;
@@ -214,6 +217,7 @@ int generic_swapfile_activate(struct swap_info_struct *sis,
 		/*
 		 * We found a PAGE_SIZE-length, PAGE_SIZE-aligned run of blocks
 		 */
+        /*将一页范围的块加入swap extend list*/
 		ret = add_swap_extent(sis, page_no, 1, first_block);
 		if (ret < 0)
 			goto out;

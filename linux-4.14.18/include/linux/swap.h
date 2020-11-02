@@ -230,18 +230,30 @@ struct swap_cluster_list {
 struct swap_info_struct {
 	unsigned long	flags;		/* SWP_USED etc: see above */
 	signed short	prio;		/* swap priority of this type */
+    /*swap on的swap area*/
 	struct plist_node list;		/* entry in swap_active_head */
 	struct plist_node avail_lists[MAX_NUMNODES];/* entry in swap_avail_heads */
 	signed char	type;		/* strange name for an index */
+    /*swap_map数组元素的个数*/
 	unsigned int	max;		/* extent of the swap_map */
+    /*一个元对应一页,用来存储 页的引用次数*/
 	unsigned char *swap_map;	/* vmalloc'ed array of usage counts */
 	struct swap_cluster_info *cluster_info; /* cluster info. Only for SSD */
 	struct swap_cluster_list free_clusters; /* free clusters list */
+    /*
+    可能存在的最低空闲槽位,低于此无空闲槽
+    用于线性扫描时从这里开始,以减少搜索空间
+    */
 	unsigned int lowest_bit;	/* index of first free in swap_map */
+    /*可能出现的最高空闲槽位,高于此无空闲槽*/
 	unsigned int highest_bit;	/* index of last free in swap_map */
+    /*swap area可用页数*/
 	unsigned int pages;		/* total of usable pages of swap */
+    /*正在使用中的页数*/
 	unsigned int inuse_pages;	/* number of those currently in use */
+    /*下一个分配的可能索引*/
 	unsigned int cluster_next;	/* likely index for next allocation */
+    /*下一次搜索剩余的数目*/
 	unsigned int cluster_nr;	/* countdown to next cluster search */
 	struct percpu_cluster __percpu *percpu_cluster; /* per cpu's swap location */
 	struct swap_extent *curr_swap_extent;
