@@ -481,7 +481,7 @@ static void inc_cluster_info_page(struct swap_info_struct *p,
 		alloc_cluster(p, idx);
 
 	VM_BUG_ON(cluster_count(&cluster_info[idx]) >= SWAPFILE_CLUSTER);
-    /*设置cluster可用页数*/
+    /*设置cluster已用页数*/
 	cluster_set_count(&cluster_info[idx],
 		cluster_count(&cluster_info[idx]) + 1);
 }
@@ -545,6 +545,7 @@ static bool scan_swap_map_try_ssd_cluster(struct swap_info_struct *si,
 
 new_cluster:
 	cluster = this_cpu_ptr(si->percpu_cluster);
+	/*从free_clusters/discard_clusters取一个放入per_cpu*/
 	if (cluster_is_null(&cluster->index)) {
 		if (!cluster_list_empty(&si->free_clusters)) {
 			cluster->index = si->free_clusters.head;
@@ -571,11 +572,13 @@ new_cluster:
 	tmp = cluster->next;
 	max = min_t(unsigned long, si->max,
 		    (cluster_next(&cluster->index) + 1) * SWAPFILE_CLUSTER);
+	/*cluster已用完??*/
 	if (tmp >= max) {
 		cluster_set_null(&cluster->index);
 		goto new_cluster;
 	}
 	ci = lock_cluster(si, tmp);
+	//从cluster中找一个可用的
 	while (tmp < max) {
 		if (!si->swap_map[tmp]) {
 			found_free = true;
@@ -614,11 +617,12 @@ static void swap_range_alloc(struct swap_info_struct *si, unsigned long offset,
 {
 	unsigned int end = offset + nr_entries - 1;
 
-	if (offset == si->lowest_bit)
+	if (offset == si->lowest_bit) //表示最低位页槽已分配,故最低位需右移动
 		si->lowest_bit += nr_entries;
-	if (end == si->highest_bit)
+	if (end == si->highest_bit) //表示最高位页槽已分配,故最高位需向左移动
 		si->highest_bit -= nr_entries;
 	si->inuse_pages += nr_entries;
+	//页槽已全部分配完,将其移出可用链表
 	if (si->inuse_pages == si->pages) {
 		si->lowest_bit = si->max;
 		si->highest_bit = 0;
@@ -644,13 +648,13 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 	unsigned long end = offset + nr_entries - 1;
 	void (*swap_slot_free_notify)(struct block_device *, unsigned long);
 
-	if (offset < si->lowest_bit)
+	if (offset < si->lowest_bit) //表示最低位左侧有空页槽,故向左移动
 		si->lowest_bit = offset;
-	if (end > si->highest_bit) {
+	if (end > si->highest_bit) { //表示最高位右侧有空页槽,故向右移动
 		bool was_full = !si->highest_bit;
 
 		si->highest_bit = end;
-		if (was_full && (si->flags & SWP_WRITEOK))
+		if (was_full && (si->flags & SWP_WRITEOK)) //有空页槽,将其移入可用链表(即从满->非满)
 			add_to_avail_list(si);
 	}
 	atomic_long_add(nr_entries, &nr_swap_pages);
@@ -660,6 +664,7 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 			si->bdev->bd_disk->fops->swap_slot_free_notify;
 	else
 		swap_slot_free_notify = NULL;
+	//front swap 作用是什么
 	while (offset <= end) {
 		frontswap_invalidate_page(si->type, offset);
 		if (swap_slot_free_notify)
@@ -694,7 +699,7 @@ static int scan_swap_map_slots(struct swap_info_struct *si,
 	 */
 
 	si->flags += SWP_SCANNING;
-	scan_base = offset = si->cluster_next;
+	scan_base = offset = si->cluster_next; //下一个可分配起始地址
 
 	/* SSD algorithm */
 	if (si->cluster_info) {
@@ -705,6 +710,7 @@ static int scan_swap_map_slots(struct swap_info_struct *si,
 	}
 
 	if (unlikely(!si->cluster_nr--)) {
+		//swap area中没有足够的页槽,不采用簇查找方式
 		if (si->pages - si->inuse_pages < SWAPFILE_CLUSTER) {
 			si->cluster_nr = SWAPFILE_CLUSTER - 1;
 			goto checks;
@@ -721,11 +727,14 @@ static int scan_swap_map_slots(struct swap_info_struct *si,
 		scan_base = offset = si->lowest_bit;
 		last_in_cluster = offset + SWAPFILE_CLUSTER - 1;
 
+		/*
+		查找[lowest_bit,highest_bit]范围内SWAPFILE_CLUSTER个连续页槽都可用的区间(地址空间)
+		*/
 		/* Locate the first empty (unaligned) cluster */
 		for (; last_in_cluster <= si->highest_bit; offset++) {
 			if (si->swap_map[offset])
-				last_in_cluster = offset + SWAPFILE_CLUSTER;
-			else if (offset == last_in_cluster) {
+				last_in_cluster = offset + SWAPFILE_CLUSTER; //offset的页槽已用,继续查找下一连续地址空间
+			else if (offset == last_in_cluster) { //[offset,last_in_cluster]都可用
 				spin_lock(&si->lock);
 				offset -= SWAPFILE_CLUSTER - 1;
 				si->cluster_next = offset;
@@ -738,6 +747,7 @@ static int scan_swap_map_slots(struct swap_info_struct *si,
 			}
 		}
 
+		//没有查找到SWAPFILE_CLUSTER个连续可用页槽
 		offset = scan_base;
 		spin_lock(&si->lock);
 		si->cluster_nr = SWAPFILE_CLUSTER - 1;
@@ -762,6 +772,7 @@ checks:
 		scan_base = offset = si->lowest_bit;
 
 	ci = lock_cluster(si, offset);
+	/*无足够的页槽,回收swap area空间*/
 	/* reuse swap entry of cache-only swap if not busy. */
 	if (vm_swap_full() && si->swap_map[offset] == SWAP_HAS_CACHE) {
 		int swap_was_freed;
@@ -770,9 +781,9 @@ checks:
 		swap_was_freed = __try_to_reclaim_swap(si, offset);
 		spin_lock(&si->lock);
 		/* entry was freed successfully, try to use this again */
-		if (swap_was_freed)
+		if (swap_was_freed) //回收成功,重用它
 			goto checks;
-		goto scan; /* check next one */
+		goto scan; /* check next one 继续扫描下一个是否可释放*/
 	}
 
 	if (si->swap_map[offset]) {
@@ -782,13 +793,13 @@ checks:
 		else
 			goto done;
 	}
-	si->swap_map[offset] = usage;
+	si->swap_map[offset] = usage; //标记已用
 	inc_cluster_info_page(si, si->cluster_info, offset);
 	unlock_cluster(ci);
 
-	swap_range_alloc(si, offset, 1);
+	swap_range_alloc(si, offset, 1); //更新lowest_bit,highest_bit
 	si->cluster_next = offset + 1;
-	slots[n_ret++] = swp_entry(si->type, offset);
+	slots[n_ret++] = swp_entry(si->type, offset); //记录页槽项
 
 	/* got enough slots or reach max slots? */
 	if ((n_ret == nr) || (offset >= si->highest_bit))
@@ -817,7 +828,7 @@ checks:
 	++offset;
 
 	/* non-ssd case, still more slots in cluster? */
-	if (si->cluster_nr && !si->swap_map[offset]) {
+	if (si->cluster_nr && !si->swap_map[offset]) { //还需空页槽且下一个页槽可用,继续分配
 		--si->cluster_nr;
 		goto checks;
 	}
@@ -829,10 +840,11 @@ done:
 scan:
 	spin_unlock(&si->lock);
 	while (++offset <= si->highest_bit) {
-		if (!si->swap_map[offset]) {
+		if (!si->swap_map[offset]) { //可用页槽,分配
 			spin_lock(&si->lock);
 			goto checks;
 		}
+		//可用页槽占比小于50%,检查当前页槽是否可回收
 		if (vm_swap_full() && si->swap_map[offset] == SWAP_HAS_CACHE) {
 			spin_lock(&si->lock);
 			goto checks;
@@ -842,6 +854,7 @@ scan:
 			latency_ration = LATENCY_LIMIT;
 		}
 	}
+	//切换了cluster,计算[lowest_bit,cluster->next]是否有可用页槽
 	offset = si->lowest_bit;
 	while (offset < scan_base) {
 		if (!si->swap_map[offset]) {
@@ -879,7 +892,7 @@ static int swap_alloc_cluster(struct swap_info_struct *si, swp_entry_t *slot)
 	idx = cluster_list_first(&si->free_clusters);
 	offset = idx * SWAPFILE_CLUSTER;
 	ci = lock_cluster(si, offset);
-	alloc_cluster(si, idx);
+	alloc_cluster(si, idx); //从free_clusters中移除
 	cluster_set_count_flag(ci, SWAPFILE_CLUSTER, CLUSTER_FLAG_HUGE);
 
 	map = si->swap_map + offset;
@@ -953,6 +966,7 @@ int get_swap_pages(int n_goal, bool cluster, swp_entry_t swp_entries[])
 
 start_over:
 	node = numa_node_id();
+	/*轮循可用的swap area,看是否能够分配足够的页槽*/
 	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
 		/* requeue si to after same-priority siblings */
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
@@ -3045,10 +3059,15 @@ static int setup_swap_map_and_extents(struct swap_info_struct *p,
 	}
 
 	/* Haven't marked the cluster free yet, no list operation involved */
+	/*
+	设置最后一cluster:最后一个cluster大小<=SWAPFILE_CLUSTER,
+	小于时后面的应标记已使用
+	*/
 	for (i = maxpages; i < round_up(maxpages, SWAPFILE_CLUSTER); i++)
 		inc_cluster_info_page(p, cluster_info, i);
 
 	if (nr_good_pages) {
+		/*第0存储swap header,标记已使用*/
 		swap_map[0] = SWAP_MAP_BAD;
 		/*
 		 * Not mark the cluster free yet, no list
@@ -3075,14 +3094,22 @@ static int setup_swap_map_and_extents(struct swap_info_struct *p,
 	 * Reduce false cache line sharing between cluster_info and
 	 * sharing same address space.
 	 */
-	for (k = 0; k < SWAP_CLUSTER_COLS; k++) {
-		j = (k + col) % SWAP_CLUSTER_COLS;
-		for (i = 0; i < DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS); i++) {
-			idx = i * SWAP_CLUSTER_COLS + j;
+	/*
+	[0,j] [1,j],[..,j],[n,j],[..]
+	[0,j+1] [1,j+1],[..,j+1],[n,j+1],[..]
+	[0,j+2] [1,j+2],[..,j+2],[n,j+2],[..]
+	按照以上顺序对cluster_info进行链接,可避免加载下一个cluster_info将之前的替换出去
+	增大命中率  ??
+	*/ 
+	for (k = 0; k < SWAP_CLUSTER_COLS; k++) { //列数
+		j = (k + col) % SWAP_CLUSTER_COLS; //cluster_next ssd为随机数,从第j列开始
+		for (i = 0; i < DIV_ROUND_UP(nr_clusters, SWAP_CLUSTER_COLS); i++) { //行数
+			idx = i * SWAP_CLUSTER_COLS + j; //i行第j个
 			if (idx >= nr_clusters)
 				continue;
 			if (cluster_count(&cluster_info[idx]))
 				continue;
+			//加入到free_clusters链表中
 			cluster_set_flag(&cluster_info[idx], CLUSTER_FLAG_FREE);
 			cluster_list_add_tail(&p->free_clusters, cluster_info,
 					      idx);
@@ -3204,8 +3231,8 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		 * select a random position to start with to help wear leveling
 		 * SSD
 		 */
-		p->cluster_next = 1 + (prandom_u32() % p->highest_bit);
-		nr_cluster = DIV_ROUND_UP(maxpages, SWAPFILE_CLUSTER);
+		p->cluster_next = 1 + (prandom_u32() % p->highest_bit); //磨损平衡
+		nr_cluster = DIV_ROUND_UP(maxpages, SWAPFILE_CLUSTER); //分成nr_cluster个簇
 
 		cluster_info = kvzalloc(nr_cluster * sizeof(*cluster_info),
 					GFP_KERNEL);
@@ -3222,6 +3249,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			error = -ENOMEM;
 			goto bad_swap;
 		}
+		//初始化percpu的cluster为空
 		for_each_possible_cpu(cpu) {
 			struct percpu_cluster *cluster;
 			cluster = per_cpu_ptr(p->percpu_cluster, cpu);

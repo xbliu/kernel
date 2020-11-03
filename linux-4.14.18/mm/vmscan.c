@@ -641,7 +641,7 @@ static pageout_t pageout(struct page *page, struct address_space *mapping,
 		};
 
 		SetPageReclaim(page);
-		res = mapping->a_ops->writepage(page, &wbc);
+		res = mapping->a_ops->writepage(page, &wbc); //回写page数据
 		if (res < 0)
 			handle_write_error(mapping, page, res);
 		if (res == AOP_WRITEPAGE_ACTIVATE) {

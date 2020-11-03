@@ -35,7 +35,10 @@ static const struct address_space_operations swap_aops = {
 	.migratepage	= migrate_page,
 #endif
 };
-
+/*
+同一个address_space会被多个CPU同时访问,锁的争抢厉害,
+所以划分开来,以减少CPU之间对锁的竞争,提高并行性
+*/
 struct address_space *swapper_spaces[MAX_SWAPFILES];
 static unsigned int nr_swapper_spaces[MAX_SWAPFILES];
 bool swap_vma_readahead = true;
@@ -121,12 +124,13 @@ int __add_to_swap_cache(struct page *page, swp_entry_t entry)
 	VM_BUG_ON_PAGE(!PageSwapBacked(page), page);
 
 	page_ref_add(page, nr);
-	SetPageSwapCache(page);
+	SetPageSwapCache(page); //标记加入swap cache
 
+	/*加入radix tree*/
 	address_space = swap_address_space(entry);
 	spin_lock_irq(&address_space->tree_lock);
 	for (i = 0; i < nr; i++) {
-		set_page_private(page + i, entry.val + i);
+		set_page_private(page + i, entry.val + i); //page->private存储swp_entry项
 		error = radix_tree_insert(&address_space->page_tree,
 					  idx + i, page + i);
 		if (unlikely(error))
@@ -134,7 +138,7 @@ int __add_to_swap_cache(struct page *page, swp_entry_t entry)
 	}
 	if (likely(!error)) {
 		address_space->nrpages += nr;
-		__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES, nr);
+		__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES, nr); //page属于file
 		ADD_CACHE_INFO(add_total, nr);
 	} else {
 		/*
@@ -249,7 +253,7 @@ int add_to_swap(struct page *page)
 	 * is swap in later. Always setting the dirty bit for the page solves
 	 * the problem.
 	 */
-	set_page_dirty(page);
+	set_page_dirty(page); //设为脏,可进行回收
 
 	return 1;
 
@@ -376,6 +380,7 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		 * called after lookup_swap_cache() failed, re-calling
 		 * that would confuse statistics.
 		 */
+		/*a1.从swap cache中获取*/
 		found_page = find_get_page(swapper_space, swp_offset(entry));
 		if (found_page)
 			break;
@@ -394,6 +399,7 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		/*
 		 * Get a new page to read into from swap.
 		 */
+		/*a2.分配page*/ 
 		if (!new_page) {
 			new_page = alloc_page_vma(gfp_mask, vma, addr);
 			if (!new_page)
@@ -426,6 +432,7 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 			break;
 		}
 
+		/*a3.加入swap cache与anon lru链表中*/
 		/* May fail (-ENOMEM) if radix-tree node allocation failed. */
 		__SetPageLocked(new_page);
 		__SetPageSwapBacked(new_page);
@@ -436,7 +443,7 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 			 * Initiate read into locked page and return.
 			 */
 			lru_cache_add_anon(new_page);
-			*new_page_allocated = true;
+			*new_page_allocated = true; //新分配的页
 			return new_page;
 		}
 		radix_tree_preload_end();
@@ -562,7 +569,7 @@ struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 	struct blk_plug plug;
 	bool do_poll = true, page_allocated;
 
-	mask = swapin_nr_pages(offset) - 1;
+	mask = swapin_nr_pages(offset) - 1; //计算一次swap in多少页
 	if (!mask)
 		goto skip;
 
@@ -574,6 +581,7 @@ struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 		start_offset++;
 
 	blk_start_plug(&plug);
+	/*连续读取多页数据*/
 	for (offset = start_offset; offset <= end_offset ; offset++) {
 		/* Ok, do the async read-ahead now */
 		page = __read_swap_cache_async(
@@ -582,7 +590,7 @@ struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 		if (!page)
 			continue;
 		if (page_allocated) {
-			swap_readpage(page, false);
+			swap_readpage(page, false); //从swap area中读取相应数据到该页中
 			if (offset != entry_offset &&
 			    likely(!PageTransCompound(page))) {
 				SetPageReadahead(page);
