@@ -349,11 +349,11 @@ static void cluster_list_add_tail(struct swap_cluster_list *list,
 		 * Nested cluster lock, but both cluster locks are
 		 * only acquired when we held swap_info_struct->lock
 		 */
-		ci_tail = ci + tail;
+		ci_tail = ci + tail; //根椐下标获取尾部swap_cluster_info
 		spin_lock_nested(&ci_tail->lock, SINGLE_DEPTH_NESTING);
-		cluster_set_next(ci_tail, idx);
+		cluster_set_next(ci_tail, idx); //设置当前cluster的next cluster的下标
 		spin_unlock(&ci_tail->lock);
-		cluster_set_next_flag(&list->tail, idx, 0);
+		cluster_set_next_flag(&list->tail, idx, 0); //更新尾部idx
 	}
 }
 
@@ -3107,7 +3107,7 @@ static int setup_swap_map_and_extents(struct swap_info_struct *p,
 			idx = i * SWAP_CLUSTER_COLS + j; //i行第j个
 			if (idx >= nr_clusters)
 				continue;
-			if (cluster_count(&cluster_info[idx]))
+			if (cluster_count(&cluster_info[idx])) //有坏块则不会将其放入free_clusters链表中
 				continue;
 			//加入到free_clusters链表中
 			cluster_set_flag(&cluster_info[idx], CLUSTER_FLAG_FREE);
@@ -3314,6 +3314,9 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	if (swap_flags & SWAP_FLAG_PREFER)
 		prio =
 		  (swap_flags & SWAP_FLAG_PRIO_MASK) >> SWAP_FLAG_PRIO_SHIFT;
+	/*
+	a8.使能swap area(主要将其链接到swap_active_head)
+	*/
 	enable_swap_info(p, prio, swap_map, cluster_info, frontswap_map);
 
 	pr_info("Adding %uk swap on %s.  Priority:%d extents:%d across:%lluk %s%s%s%s%s\n",

@@ -147,9 +147,9 @@ struct zone;
  */
 struct swap_extent {
 	struct list_head list;
-	pgoff_t start_page;
-	pgoff_t nr_pages;
-	sector_t start_block;
+	pgoff_t start_page; //逻辑开始页号
+	pgoff_t nr_pages; //连续的页数
+	sector_t start_block; //物理页号
 };
 
 /*
