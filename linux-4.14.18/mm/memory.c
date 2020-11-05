@@ -3005,7 +3005,7 @@ int do_swap_page(struct vm_fault *vmf)
 		lru_cache_add_active_or_unevictable(page, vma);
 	}
 
-	swap_free(entry);
+	swap_free(entry); //释放swap entry
 	if (mem_cgroup_swap_full(page) ||
 	    (vma->vm_flags & VM_LOCKED) || PageMlocked(page))
 		try_to_free_swap(page);

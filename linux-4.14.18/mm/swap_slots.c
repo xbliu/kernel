@@ -100,6 +100,7 @@ static bool check_cache_active(void)
 		return false;
 
 	pages = get_nr_swap_pages();
+	//当可用页槽数大于阀值(nr_cpu *threshold)时采用swap_slot_cache
 	if (!swap_slot_cache_active) {
 		if (pages > num_online_cpus() *
 		    THRESHOLD_ACTIVATE_SWAP_SLOTS_CACHE)
@@ -107,7 +108,7 @@ static bool check_cache_active(void)
 		goto out;
 	}
 
-	/* if global pool of slot caches too low, deactivate cache */
+	/* if global pool of slot caches too low, deactivate cache  禁止swap_slot_cache*/
 	if (pages < num_online_cpus() * THRESHOLD_DEACTIVATE_SWAP_SLOTS_CACHE)
 		deactivate_swap_slots_cache();
 out:
@@ -332,6 +333,7 @@ swp_entry_t get_swap_page(struct page *page)
 	 */
 	cache = raw_cpu_ptr(&swp_slots);
 
+	//swap slot cache有效时从swap slot cache中获取
 	if (check_cache_active()) {
 		mutex_lock(&cache->alloc_lock);
 		if (cache->slots) {

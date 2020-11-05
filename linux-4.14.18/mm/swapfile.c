@@ -572,7 +572,7 @@ new_cluster:
 	tmp = cluster->next;
 	max = min_t(unsigned long, si->max,
 		    (cluster_next(&cluster->index) + 1) * SWAPFILE_CLUSTER);
-	/*cluster已用完??*/
+	/*上一次已找到此cluster中最后一个可用swap entry*/
 	if (tmp >= max) {
 		cluster_set_null(&cluster->index);
 		goto new_cluster;
@@ -755,7 +755,13 @@ static int scan_swap_map_slots(struct swap_info_struct *si,
 
 checks:
 	if (si->cluster_info) {
-		while (scan_swap_map_ssd_cluster_conflict(si, offset)) {
+		/*
+		1. SSD algorithm开始未找到free cluster,进行scan
+		2. 扫描过程中一批cluster释放,此时找到的空闲页槽
+		空闲页槽所属cluster可能位于free_clusters链表中间
+		重新取第一个free cluster
+		*/
+		while (scan_swap_map_ssd_cluster_conflict(si, offset)) { //为什么用why而不是if呢???
 		/* take a break if we already got some slots */
 			if (n_ret)
 				goto done;
@@ -783,7 +789,7 @@ checks:
 		/* entry was freed successfully, try to use this again */
 		if (swap_was_freed) //回收成功,重用它
 			goto checks;
-		goto scan; /* check next one 继续扫描下一个是否可释放*/
+		goto scan; /* 扫描整个swap area*/
 	}
 
 	if (si->swap_map[offset]) {
@@ -839,6 +845,7 @@ done:
 
 scan:
 	spin_unlock(&si->lock);
+	//从当前的页槽号往后查找
 	while (++offset <= si->highest_bit) {
 		if (!si->swap_map[offset]) { //可用页槽,分配
 			spin_lock(&si->lock);
@@ -854,7 +861,7 @@ scan:
 			latency_ration = LATENCY_LIMIT;
 		}
 	}
-	//切换了cluster,计算[lowest_bit,cluster->next]是否有可用页槽
+	//从当前的页槽号往前查找
 	offset = si->lowest_bit;
 	while (offset < scan_base) {
 		if (!si->swap_map[offset]) {
@@ -968,11 +975,16 @@ start_over:
 	node = numa_node_id();
 	/*轮循可用的swap area,看是否能够分配足够的页槽*/
 	plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
-		/* requeue si to after same-priority siblings */
+		/* 
+		requeue si to after same-priority siblings
+		对于同优先级的兄弟结点,遍历后加入到同优先级最后,这样后面的同优先级的结点才有公平的分配机会
+		而不是等最前面同优先级结点全用完后才轮到后面的结点.
+		即同优先级结点采用轮转算法来保证公平
+		*/
 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
 		spin_unlock(&swap_avail_lock);
 		spin_lock(&si->lock);
-		if (!si->highest_bit || !(si->flags & SWP_WRITEOK)) {
+		if (!si->highest_bit || !(si->flags & SWP_WRITEOK)) { //swap area已分配完或者被禁止了
 			spin_lock(&swap_avail_lock);
 			if (plist_node_empty(&si->avail_lists[node])) {
 				spin_unlock(&si->lock);
@@ -1013,6 +1025,10 @@ nextsi:
 		 * swap_avail_head list then try it, otherwise start over
 		 * if we have not gotten any slots.
 		 */
+		/*
+		1)多个调用者同时调用,此swap area page已用尽
+		2)swap_avail_head因drop操作已变动,next仍在链表中继续否则重新扫描
+		*/ 
 		if (plist_node_empty(&next->avail_lists[node]))
 			goto start_over;
 	}
